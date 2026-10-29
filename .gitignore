@@ -1,0 +1,29 @@
+# Dependencies
+node_modules/
+.bun-cache/
+
+# Build output
+client/dist/
+client/dist-cvm/
+server/dist/
+.space-build/
+*.tsbuildinfo
+
+# App data — the live database holds founder profiles, leads, and the
+# credentials entered in-app. It must never be committed.
+app.db
+app.db-shm
+app.db-wal
+*.db
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Runtime / audit artifacts
+.harness/
+audits/
+icon.png
+icon.jpg
+icon.webp
