@@ -52,8 +52,8 @@ const btnSmall = "rounded-full border border-[var(--border)] bg-[var(--surface)]
 function LlmSetupGate({ onGoSettings }: { onGoSettings: () => void }) {
   return (
     <section className="mt-5 rounded-[var(--radius)] border-2 border-[var(--amber)] bg-[var(--surface)] p-5" aria-label="Muse LLM setup required">
-      <h2 className="font-serif text-xl font-bold">Step 2 — Configure AI (one-time setup)</h2>
-      <p className="mt-2 text-sm leading-relaxed">Your target profile (Step 1) is done. Now configure Muse — this is a one-time step: the configuration is saved and persists, so you will not be asked again on the next search or visit. You can still change it later anytime from <strong>Edit AI config</strong> in the AI settings. EarlyProof runs on Muse: pain-language expansion, lead classification, outreach drafts, feedback summaries and next-experiment suggestions are core steps of the flow — not optional add-ons — and there is no rule-only fallback mode. Until Muse is configured, search, classification, drafts and the rest of the core flow stay blocked.</p>
+      <h2 className="font-serif text-xl font-bold">Configure AI (one-time setup)</h2>
+      <p className="mt-2 text-sm leading-relaxed">Your target profile is done. Now configure Muse — this is a one-time setup: the configuration is saved and persists, so you will not be asked again on the next search or visit. You can still change it later anytime from <strong>Edit AI config</strong> in Settings. EarlyProof runs on Muse: pain-language expansion, lead classification, outreach drafts, feedback summaries and next-experiment suggestions are core steps of the flow — not optional add-ons — and there is no rule-only fallback mode. Until Muse is configured, search, classification, drafts and the rest of the core flow stay blocked.</p>
       <p className="mt-2 text-sm leading-relaxed"><strong>What to do:</strong> open the AI settings in this app and enter <strong>your Muse API key</strong> there — models are picked automatically, so there is nothing else to configure. Enter it <strong>in the app only — never in chat</strong>. Your key is stored server-side and never shown again beyond its last 4 characters.</p>
       <p className="mt-2 text-sm text-[var(--dim)]">The rule-based relevance check still runs underneath as a pre-filter and safety net — but on its own it clears nobody for outreach. Every lead must be classified by Muse before it can be used, and nothing ever posts without you approving the exact text.</p>
       <button type="button" className={btnPrimary + " mt-3"} onClick={onGoSettings}>Open AI settings</button>
@@ -605,7 +605,7 @@ function ResultsTab({ profile, leads, expansions, llmConfigured, channels, subs,
 function AddLeadForm({ profile, invalidate, flash }: { profile: Profile; invalidate: () => void; flash: (m: string) => void }) {
   const [open, setOpen] = useState(false);
   const [f, setF] = useState({ channel: "reddit", externalUrl: "", author: "", community: "", title: "", body: "" });
-  const add = useMutation({ mutationFn: () => api.addPastedLead({ profileId: profile.id, ...f }), onSuccess: () => { invalidate(); flash("Candidate added — it stays hidden from results until Muse synthesizes it in Step 4."); setF({ channel: "reddit", externalUrl: "", author: "", community: "", title: "", body: "" }); setOpen(false); } });
+  const add = useMutation({ mutationFn: () => api.addPastedLead({ profileId: profile.id, ...f }), onSuccess: () => { invalidate(); flash("Candidate added — it stays hidden from results until Muse synthesizes it on the Results tab."); setF({ channel: "reddit", externalUrl: "", author: "", community: "", title: "", body: "" }); setOpen(false); } });
   if (!open) return <button type="button" className={btnGhost + " w-full"} onClick={() => setOpen(true)}>+ Add a person you found (Reddit / X link, group member, anyone)</button>;
   const set = (k: keyof typeof f) => (e: { target: { value: string } }) => setF((v) => ({ ...v, [k]: e.target.value }));
   return (
@@ -973,8 +973,8 @@ function AiTab({ profile, llm, feedback, summaries, flash, invalidate, goCreateP
   return (
     <section className="mt-5 space-y-4">
       <div>
-        <h2 className="font-serif text-lg font-bold">Step 2 — AI settings {configured ? "· Edit AI config" : "· Muse is required, not optional"}</h2>
-        <p className="text-sm text-[var(--dim)]">{configured ? <><strong className="text-[var(--text)]">You're configured — this step is done, and you won't be asked again</strong> on any search or visit. Your Muse configuration is saved and persists. Use this page only when you want to edit your config: replace the key or update your voice notes, then save. </> : <>This is Step 2 of the workflow, after your target profile (Step 1) — and it's a one-time, must-have setup: configure it once here, it persists, and you won't be asked again; you can still edit it here anytime. Without your Muse API key, EarlyProof's core flow — search, classification, drafts, feedback summaries, next experiments — stays blocked, and there is no rule-only mode to fall back to. </>} The AI reads and writes; it never decides. It never posts or DMs on its own, never scores your PMF, and low-confidence verdicts are held for your review instead of hidden behind a number. Muse models are picked automatically — a fast tier for high-volume work (pain expansion, lead classification), a large tier for outreach drafts and feedback summaries. The rule-based topic gate stays underneath as a pre-filter and safety net, so a model can't resurrect a post the rules rejected — but it never substitutes for Muse classification.</p>
+        <h2 className="font-serif text-lg font-bold">AI settings {configured ? "· Edit AI config" : "· Muse is required, not optional"}</h2>
+        <p className="text-sm text-[var(--dim)]">{configured ? <><strong className="text-[var(--text)]">You're configured, and you won't be asked again</strong> on any search or visit. Your Muse configuration is saved and persists. Use this page only when you want to edit your config: replace the key or update your voice notes, then save. </> : <>First create a target profile on the Profile tab, then do this once here — it persists, and you won't be asked again; you can still edit it here anytime. Without your Muse API key, EarlyProof's core flow — search, classification, drafts, feedback summaries, next experiments — stays blocked, and there is no rule-only mode to fall back to. </>} The AI reads and writes; it never decides. It never posts or DMs on its own, never scores your PMF, and low-confidence verdicts are held for your review instead of hidden behind a number. Muse models are picked automatically — a fast tier for high-volume work (pain expansion, lead classification), a large tier for outreach drafts and feedback summaries. The rule-based topic gate stays underneath as a pre-filter and safety net, so a model can't resurrect a post the rules rejected — but it never substitutes for Muse classification.</p>
       </div>
 
       {/* Settings */}
@@ -1002,7 +1002,7 @@ function AiTab({ profile, llm, feedback, summaries, flash, invalidate, goCreateP
         <>
           {/* Pain expansion */}
           <div className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-4">
-            <h3 className="font-serif text-base font-bold">1 · Pain language — from your description to their words</h3>
+            <h3 className="font-serif text-base font-bold">Pain language — from your description to their words</h3>
             <p className="mt-1 text-sm text-[var(--dim)]">Your plain description (“{profile.pain.slice(0, 90)}{profile.pain.length > 90 ? "…" : ""}”) becomes the phrases real people type when they hit this pain, the workaround language that proves they're already hacking a solution, and exclusions that keep adjacent noise out of search.</p>
             {configured
               ? <button type="button" className={btnPrimary + " mt-2"} disabled={expand.isPending} onClick={() => expand.mutate()}>{expand.isPending ? "Expanding…" : painPhrases.length ? "Re-expand pain language" : "Expand pain language"}</button>
@@ -1020,7 +1020,7 @@ function AiTab({ profile, llm, feedback, summaries, flash, invalidate, goCreateP
 
           {/* Feedback */}
           <div className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-4">
-            <h3 className="font-serif text-base font-bold">2 · Feedback — summarised, never invented</h3>
+            <h3 className="font-serif text-base font-bold">Feedback — summarised, never invented</h3>
             <p className="mt-1 text-sm text-[var(--dim)]">Paste what seed users actually said — call notes, messages, replies — word for word. The summary clusters it, shows where they got stuck and what they asked for, and quotes them exactly: any quote the model can't source from your text is dropped before you see it. It also drafts follow-up questions aimed at friction, not praise.</p>
             <form className="mt-3 space-y-2" onSubmit={(e: FormEvent) => { e.preventDefault(); addFb.mutate(); }}>
               <div className="grid grid-cols-2 gap-2">
