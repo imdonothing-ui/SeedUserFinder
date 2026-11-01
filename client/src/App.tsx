@@ -278,17 +278,38 @@ function ProfileForm({ existing, onDone, onClose }: { existing?: Profile; onDone
    becomes the phrases real people type, and competitor reviews add more. */
 function PainLanguagePanel({ profile, configured, flash, invalidate }: { profile: Profile; configured: boolean; flash: (m: string) => void; invalidate: () => void }) {
   const [expandMsg, setExpandMsg] = useState("");
-  const expand = useMutation({ mutationFn: () => api.expandPainLanguage({ profileId: profile.id }), onSuccess: (r) => { invalidate(); setExpandMsg(r.message); } });
-  const applyKw = useMutation({ mutationFn: () => api.applyExpansionToKeywords({ profileId: profile.id }), onSuccess: () => { invalidate(); flash("Top pain phrases folded into your profile keywords — they'll shape the next search."); } });
+  const applyKw = useMutation({ mutationFn: () => api.applyExpansionToKeywords({ profileId: profile.id }), onSuccess: () => invalidate(), onError: () => flash("Phrases expanded, but folding them into keywords failed — tap Re-expand to retry.") });
+  const expand = useMutation({
+    mutationFn: () => api.expandPainLanguage({ profileId: profile.id }),
+    onSuccess: (r) => {
+      invalidate();
+      setExpandMsg(r.status === "ok" && r.painPhrases.length
+        ? `${r.message} Top phrases were folded into your keywords automatically — they'll shape the next search.`
+        : r.message);
+      // No user input needed: folding is a deduped local merge, so fresh
+      // phrases flow into keywords by themselves, every time.
+      if (r.status === "ok" && r.painPhrases.length) applyKw.mutate();
+    },
+  });
+  // Expansion runs itself: a profile with no phrases gets them on first
+  // sight — creating a profile is enough, no button required.
+  const autoExpanded = useRef(0);
   const painPhrases = parseJsonArr(profile.painPhrases);
+  useEffect(() => {
+    if (!configured || painPhrases.length > 0 || autoExpanded.current === profile.id || expand.isPending) return;
+    autoExpanded.current = profile.id;
+    expand.mutate();
+  }, [configured, painPhrases.length, profile.id]);
   const workPhrases = parseJsonArr(profile.workaroundPhrases);
   const exclusions = parseJsonArr(profile.exclusions);
   return (
     <div className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-4">
       <h3 className="font-serif text-base font-bold">Pain language — from your description to their words</h3>
-      <p className="mt-1 text-sm text-[var(--dim)]">Your plain description (“{profile.pain.slice(0, 90)}{profile.pain.length > 90 ? "…" : ""}”) becomes the phrases real people type when they hit this pain, the workaround language that proves they're already hacking a solution, and exclusions that keep adjacent noise out of search.</p>
+      <p className="mt-1 text-sm text-[var(--dim)]">Your plain description (“{profile.pain.slice(0, 90)}{profile.pain.length > 90 ? "…" : ""}”) becomes the phrases real people type when they hit this pain, the workaround language that proves they're already hacking a solution, and exclusions that keep adjacent noise out of search. Runs by itself — the top phrases land in your keywords automatically.</p>
       {configured
-        ? <button type="button" className={btnPrimary + " mt-2"} disabled={expand.isPending} onClick={() => expand.mutate()}>{expand.isPending ? "Expanding…" : painPhrases.length ? "Re-expand pain language" : "Expand pain language"}</button>
+        ? (painPhrases.length === 0 || expand.isPending
+          ? <p role="status" className="mt-2 text-sm font-medium text-[var(--dim)]">{expand.isPending ? "Expanding pain language…" : "Starting expansion…"}</p>
+          : <button type="button" className={btnGhost + " mt-2"} disabled={expand.isPending} onClick={() => expand.mutate()}>Re-expand pain language</button>)
         : <p className="mt-2 rounded-[var(--radius)] bg-[var(--amber-bg)] p-2 text-sm text-[var(--amber)]"><strong>Setup required.</strong> Pain expansion is a core Muse step and is blocked until you enter your Muse API key in Settings — in the app only, never in chat.</p>}
       {expandMsg && <p role="status" className="mt-2 text-sm">{expandMsg}</p>}
       {painPhrases.length > 0 && (
@@ -296,7 +317,6 @@ function PainLanguagePanel({ profile, configured, flash, invalidate }: { profile
           <div><p className="font-semibold">Phrases people use</p><div className="mt-1 flex flex-wrap gap-1.5">{painPhrases.map((p) => <span key={p} className="rounded-full bg-[var(--surface-alt)] px-2.5 py-1 text-xs font-medium">“{p}”</span>)}</div></div>
           {workPhrases.length > 0 && <div><p className="font-semibold">Workaround language</p><div className="mt-1 flex flex-wrap gap-1.5">{workPhrases.map((p) => <span key={p} className="rounded-full bg-[var(--surface-alt)] px-2.5 py-1 text-xs font-medium">“{p}”</span>)}</div></div>}
           {exclusions.length > 0 && <div><p className="font-semibold">Exclusions — signals it's not this pain</p><div className="mt-1 flex flex-wrap gap-1.5">{exclusions.map((p) => <span key={p} className="rounded-full bg-[var(--amber-bg)] px-2.5 py-1 text-xs font-medium text-[var(--amber)]">{p}</span>)}</div></div>}
-          <button type="button" className={btnGhost} disabled={applyKw.isPending} onClick={() => applyKw.mutate()}>Fold top phrases into my keywords</button>
         </div>
       )}
     </div>
