@@ -152,6 +152,12 @@ check(!!dHn && dHn.fit !== "poor" && !!dGh && dGh.fit !== "poor", "dev: HN + Git
 check(!!dAc && dAc.fit === "poor", "dev: AgingCare poor", dAc);
 const mRecs = channelRecsFor(MAKEUP, null).recs;
 check(!!mRecs.find((r) => r.channel === "hackernews" && r.fit === "poor") && !!mRecs.find((r) => r.channel === "github" && r.fit === "poor"), "makeup: HN + GitHub poor", null);
+// Regression: a makeup profile full of kin words (mom, parents, sleep,
+// money) must not map caregiver/parenting forums — kin alone never maps a
+// clustered topic, and each forum earns its place on its own.
+const MIRROR_KIN = { productName: "Magic Mirror", productDesc: "Helps people find cosmetics and put on makeup", audience: "As a mom I have no time; tired parents and mothers doing school-run makeup", pain: "never enough sleep so makeup looks bad, wasting money on the wrong foundation", workaround: "watch random tutorials", keywords: "makeup cosmetics", coreAction: "" };
+const kRecs = channelRecsFor(MIRROR_KIN, null).recs;
+check(sitemapForumsFor(MIRROR_KIN).length === 0 && !!kRecs.find((r) => r.channel === "agingcare" && r.fit === "poor") && !!kRecs.find((r) => r.channel === "mumsnet" && r.fit === "poor"), "makeup + kin words: forums unmapped and poor", null);
 const sRecs = channelRecsFor(SECONDHIFT, null).recs;
 const sRd = sRecs.find((r) => r.channel === "reddit_poc");
 check(!!sRd && sRd.needsConnection && sRd.fit !== "poor", "career: Reddit surfaced with connection note", sRd);

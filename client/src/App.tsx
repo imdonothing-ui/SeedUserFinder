@@ -153,7 +153,8 @@ export function App() {
     setRecsApplied(true);
   }, [recQ.data, recsApplied]);
   const recReasons: Record<string, string> = {};
-  for (const r of recQ.data?.recs ?? []) recReasons[r.channel] = r.reasons.join(" · ");
+  const recFit: Record<string, string> = {};
+  for (const r of recQ.data?.recs ?? []) { recReasons[r.channel] = r.reasons.join(" · "); recFit[r.channel] = r.fit; }
   const recMessage = recQ.data?.status === "ok" ? recQ.data.message : "";
 
   const invalidate = () => qc.invalidateQueries({ queryKey: ["state"] });
@@ -214,7 +215,7 @@ export function App() {
         {activeProfile && !llm?.configured && tab !== "settings" && tab !== "profile" && <LlmSetupGate onGoSettings={() => setTab("settings")} />}
 
         {tab === "profile" && <ProfileTab profiles={profiles} activeProfile={activeProfile} onSelect={(id) => setProfileId(id)} onDone={(id) => { if (id) { setProfileId(id); setTab("search"); } invalidate(); }} />}
-        {llm?.configured && activeProfile && tab === "search" && <SearchTab profile={activeProfile} expansions={(data?.expansions ?? []).filter((x) => x.profileId === activeProfile.id)} llmConfigured={!!llm?.configured} connections={data?.connections ?? []} channels={channels} setChannels={setChannels} subs={subs} setSubs={setSubs} recReasons={recReasons} recMessage={recMessage} runId={runId} setRunId={setRunId} setLastSearch={setLastSearch} result={searchResult} setResult={setSearchResult} onGoSettings={() => setTab("settings")} onDone={() => setTab("results")} flash={flash} invalidate={invalidate} />}
+        {llm?.configured && activeProfile && tab === "search" && <SearchTab profile={activeProfile} expansions={(data?.expansions ?? []).filter((x) => x.profileId === activeProfile.id)} llmConfigured={!!llm?.configured} connections={data?.connections ?? []} channels={channels} setChannels={setChannels} subs={subs} setSubs={setSubs} recReasons={recReasons} recFit={recFit} recMessage={recMessage} runId={runId} setRunId={setRunId} setLastSearch={setLastSearch} result={searchResult} setResult={setSearchResult} onGoSettings={() => setTab("settings")} onDone={() => setTab("results")} flash={flash} invalidate={invalidate} />}
         {llm?.configured && activeProfile && tab === "results" && <ResultsTab profile={activeProfile} leads={leads} expansions={(data?.expansions ?? []).filter((x) => x.profileId === activeProfile.id)} llmConfigured={!!llm?.configured} channels={channels} subs={subs} sortByScore={sortByScore} setSortByScore={setSortByScore} lastSearch={lastSearch} setLastSearch={setLastSearch} setRunId={setRunId} flash={flash} invalidate={invalidate} />}
         {llm?.configured && activeProfile && tab === "tracker" && <TrackerTab leads={leads} profile={activeProfile} followups={(data?.followups ?? []).filter((f) => f.profileId === activeProfile.id)} flash={flash} invalidate={invalidate} />}
         {llm?.configured && activeProfile && tab === "cohort" && <CohortTab profile={activeProfile} leads={leads} invites={invites} events={events} summaries={summaries} llmConfigured={!!llm?.configured} posthog={data?.posthog.find((p) => p.profileId === activeProfile.id)} flash={flash} invalidate={invalidate} />}
@@ -286,10 +287,12 @@ function ProfileTab({ profiles, activeProfile, onSelect, onDone }: { profiles: P
 
 /* Search is input only: pick channels, press the one big button, watch it
    work. Matches appear on the Results tab, which opens automatically. */
-function SearchTab({ profile, expansions, llmConfigured, connections, channels, setChannels, subs, setSubs, recReasons, recMessage, runId, setRunId, setLastSearch, result, setResult, onGoSettings, onDone, flash, invalidate }: {
+const OPEN_OPTS: [string, string][] = [["bluesky", "Bluesky · public search"], ["hackernews", "Hacker News · public search"], ["github", "GitHub · public search"], ["stackexchange", "Stack Exchange · public Q&A"], ["agingcare", "AgingCare · forum threads"], ["mumsnet", "Mumsnet · forum threads"]];
+
+function SearchTab({ profile, expansions, llmConfigured, connections, channels, setChannels, subs, setSubs, recReasons, recFit, recMessage, runId, setRunId, setLastSearch, result, setResult, onGoSettings, onDone, flash, invalidate }: {
   profile: Profile; expansions: State["expansions"]; llmConfigured: boolean; connections: State["connections"];
   channels: string[]; setChannels: (c: string[] | ((v: string[]) => string[])) => void; subs: string; setSubs: (s: string) => void;
-  recReasons: Record<string, string>; recMessage: string; runId: number; setRunId: (id: number) => void;
+  recReasons: Record<string, string>; recFit: Record<string, string>; recMessage: string; runId: number; setRunId: (id: number) => void;
   setLastSearch: (s: { found: number; created: number; synthesized: number } | null) => void;
   result: string; setResult: (s: string) => void;
   onGoSettings: () => void; onDone: () => void; flash: (m: string) => void; invalidate: () => void;
@@ -331,7 +334,7 @@ function SearchTab({ profile, expansions, llmConfigured, connections, channels, 
         <fieldset className="mt-3">
           <legend className={labelCls}>Open channels — picked for this profile, toggle freely</legend>
           <div className="flex flex-wrap gap-2">
-            {([["bluesky", "Bluesky · public search"], ["hackernews", "Hacker News · public search"], ["github", "GitHub · public search"], ["stackexchange", "Stack Exchange · public Q&A"], ["agingcare", "AgingCare · forum threads"], ["mumsnet", "Mumsnet · forum threads"]] as [string, string][]).map(([v, label]) => (
+            {OPEN_OPTS.filter(([v]) => recFit[v] !== "poor").map(([v, label]) => (
               <label key={v} title={recReasons[v] ?? label} className={`flex cursor-pointer items-center gap-2 rounded-full border px-3 py-1.5 text-sm ${channels.includes(v) ? "border-[var(--accent)] bg-[var(--accent-bg)] font-semibold" : "border-[var(--border)]"}`}>
                 <input type="checkbox" aria-label={label} checked={channels.includes(v)} onChange={() => toggle(v)} />{label}
                 {NEW_CHANNELS.has(v) && <span className="rounded-full bg-[var(--accent)] px-1.5 py-0.5 text-[10px] font-bold text-[var(--accent-text)]">New</span>}
@@ -340,6 +343,21 @@ function SearchTab({ profile, expansions, llmConfigured, connections, channels, 
           </div>
           {recMessage && <p className="mt-2 text-xs text-[var(--dim)]">{recMessage} Hover a channel for why.</p>}
         </fieldset>
+        {OPEN_OPTS.some(([v]) => recFit[v] === "poor") && (
+          <details className="mt-2 rounded-[var(--radius)] border border-dashed border-[var(--border)] p-2 text-sm">
+            <summary className="cursor-pointer text-[var(--dim)]">Not recommended for this profile ({OPEN_OPTS.filter(([v]) => recFit[v] === "poor").length}) — excluded from search, open to override</summary>
+            <div className="mt-2 space-y-1.5">
+              {OPEN_OPTS.filter(([v]) => recFit[v] === "poor").map(([v, label]) => (
+                <div key={v} className="flex flex-wrap items-center gap-2">
+                  <label className="flex cursor-pointer items-center gap-2 rounded-full border border-[var(--border)] px-3 py-1.5 text-sm">
+                    <input type="checkbox" aria-label={label} checked={channels.includes(v)} onChange={() => toggle(v)} />{label}
+                  </label>
+                  <span className="text-xs text-[var(--dim)]">{recReasons[v]}</span>
+                </div>
+              ))}
+            </div>
+          </details>
+        )}
         {isFirstFeedback && (
           <p className="mt-3 rounded-[var(--radius)] bg-[var(--accent-bg)] p-2 text-sm"><strong>Hacker News for FirstFeedback is Ask HN-only.</strong> HN is searched with help-request phrasing — “how did you get your first users”, “launched to crickets”, “no traction”, “need feedback on my project” — and only posts whose title starts with <strong>“Ask HN”</strong> count as candidates. <strong>“Show HN” showcases are excluded</strong> before the pre-filter: earlier runs were dominated by Show HN announcements, which are people launching, not people asking for help finding first users. Bluesky and GitHub search exactly as before.</p>
         )}

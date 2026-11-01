@@ -696,11 +696,16 @@ export function channelRecsFor(profile: ProfileLike, plan: ExpansionPlan | null)
   const seSites = stackSitesFor(profile);
   if (seSites.length) bump("stackexchange", 2, `People ask exactly this kind of question on ${seSites.join(" + ")} — keyless search.`);
   else bump("stackexchange", -1, "No Stack Exchange community matches this topic — it would search blindly.");
-  // Sitemap-indexed forums earn their place per profile like SE: real
-  // threads match this topic — or no forum does.
+  // Sitemap-indexed forums earn their place per profile like SE, each forum
+  // on its own: one forum mapping never shields the other from the blind
+  // penalty — a makeup profile mentioning moms must not keep AgingCare
+  // checked just because Mumsnet mapped on the same kin words.
   const smForums = sitemapForumsFor(profile);
-  if (smForums.length) for (const f of smForums) bump(f.channel, 2, `Real threads on ${f.label} match this topic — keyless sitemap-title search, no connection needed.`);
-  else { bump("agingcare", -1, "No sitemap-indexed forum matches this topic — it would search blindly."); bump("mumsnet", -1, "No sitemap-indexed forum matches this topic — it would search blindly."); }
+  for (const ch of ["agingcare", "mumsnet"] as const) {
+    const f = smForums.find((x) => x.channel === ch);
+    if (f) bump(ch, 2, `Real threads on ${f.label} match this topic — keyless sitemap-title search, no connection needed.`);
+    else bump(ch, -1, `No ${ch === "agingcare" ? "AgingCare" : "Mumsnet"} threads match this topic — it would search blindly.`);
+  }
 
   const rank: Record<ChannelFit, number> = { best: 0, good: 1, poor: 2 };
   const recs: ChannelRec[] = [...scores.entries()].map(([channel, r]) => ({
@@ -803,7 +808,16 @@ const SITEMAP_FORUMS: SitemapForum[] = [
 ];
 export function sitemapForumsFor(profile: ProfileLike): SitemapForum[] {
   const hay = normText([profile.productName, profile.productDesc, profile.audience, profile.pain, profile.workaround, profile.keywords, profile.coreAction].join(" "));
-  return SITEMAP_FORUMS.filter((f) => countSignals(hay, f.core) * 2 + countSignals(hay, f.kin) >= f.minScore);
+  // A clustered topic (e.g. makeup) vetoes kin-only mapping: "mom", "sleep"
+  // or "money" in a makeup profile are ordinary-life words, not evidence the
+  // founder's people talk on caregiver/parenting forums. A real topic overlap
+  // (e.g. pregnancy-safe makeup) still maps via core terms.
+  const clustered = activeClusters(profile).length > 0;
+  return SITEMAP_FORUMS.filter((f) => {
+    const coreHits = countSignals(hay, f.core);
+    if (clustered && coreHits === 0) return false;
+    return coreHits * 2 + countSignals(hay, f.kin) >= f.minScore;
+  });
 }
 // Section filter (pure, tested): which sitemap files deserve a fetch for
 // THIS profile. Runs at every index level, so one code path serves flat
