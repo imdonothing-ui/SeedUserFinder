@@ -320,4 +320,15 @@ check(runSt.phase === "done" && runSt.detail.includes("Checked 0 posts"), "run s
 const runMissing = (await call("searchRunStatus", { runId: 999999 })) as any;
 check(runMissing.phase === "done" && runMissing.detail === "No such run.", "unknown run → honest miss", runMissing);
 
+// 13. Cohort events: founder-side logEvent and snippet-side recordEvent.
+const demoInv = (await state()).invites.find((i: any) => i.code === "DEMO-01");
+const logOk = (await call("logEvent", { inviteId: demoInv.id, eventType: "core", note: "smoke" })) as any;
+check(logOk.ok === true, "logEvent records founder-side event", logOk);
+const logBad = (await call("logEvent", { inviteId: 999999, eventType: "core", note: "" })) as any;
+check(logBad.ok === false, "logEvent rejects unknown invite", logBad);
+const recOk = (await call("recordEvent", { code: "demo-01", eventType: "started", note: "smoke" })) as any;
+check(recOk.ok === true && typeof recOk.message === "string", "recordEvent accepts invite code (any case)", recOk);
+const recBad = (await call("recordEvent", { code: "NOPE-00", eventType: "started", note: "" })) as any;
+check(recBad.ok === false, "recordEvent rejects unknown code", recBad);
+
 console.log(`\nSMOKE PASSED (${n} checks)`);
