@@ -156,6 +156,32 @@ export const searchExpansions = sqliteTable("search_expansions", {
   createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull().$defaultFn(() => new Date()),
 });
 
+// Search runs (Step 3 progress): one row per search/expand run so the UI
+// can poll phases instead of showing one spinner.
+export const searchRuns = sqliteTable("search_runs", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  profileId: integer("profile_id").notNull(),
+  kind: text("kind").notNull().default("search"), // search | expand
+  phase: text("phase").notNull().default("expanding"), // expanding | searching | synthesizing | done
+  detail: text("detail").notNull().default(""),
+  found: integer("found").notNull().default(0),
+  created: integer("created").notNull().default(0),
+  synthesized: integer("synthesized").notNull().default(0),
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull().$defaultFn(() => new Date()),
+});
+
+// Reply nudges: after a lead is sent, one open nudge reminds the founder to
+// check for a reply. Snooze pushes it 3 days out; stop closes it for good.
+export const followups = sqliteTable("followups", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  leadId: integer("lead_id").notNull(),
+  profileId: integer("profile_id").notNull(),
+  dueAt: integer("due_at", { mode: "timestamp_ms" }).notNull().$defaultFn(() => new Date()),
+  doneAt: integer("done_at", { mode: "timestamp_ms" }),
+  stopped: integer("stopped").notNull().default(0),
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull().$defaultFn(() => new Date()),
+});
+
 // legacy scaffold table kept in type file only; dropped in migration for new DBs, harmless if absent
 export const entries = sqliteTable("entries", {
   id: integer("id").primaryKey({ autoIncrement: true }),

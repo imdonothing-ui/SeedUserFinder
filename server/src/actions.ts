@@ -1,8 +1,14 @@
 import { defineAction, z, type ActionsModule, type Ctx } from "@hatch/space-sdk";
 import { desc, eq, and } from "drizzle-orm";
+import type { BunSQLiteDatabase } from "drizzle-orm/bun-sqlite";
 import * as schema from "./schema";
 
+type Db = BunSQLiteDatabase<typeof schema>;
+
 const UA = "EarlyProof/1.0 (founder-approved seed outreach)";
+// App version shown on the page so a founder always knows which build they
+// are testing. Keep in sync with package.json.
+const PKG_VERSION = "0.2.0";
 
 // ─── FirstFeedback Hacker News retune (2026-10-29) ─────────────────────────
 // For the FirstFeedback profile ONLY, Hacker News is an Ask HN help-request
@@ -138,6 +144,40 @@ function containsTerm(normHaystack: string, normTerm: string): boolean {
   if (normTerm.includes(" ")) return normHaystack.includes(normTerm);
   return ` ${normHaystack} `.includes(` ${normTerm} `);
 }
+// Kinship/community synonym families (already normalized): the anchor model
+// matches relations, not just words — a daughter writing about her father is
+// the same audience as one writing about her "mom", and caregiver forums
+// speak in LO/DH/DW abbreviations. Applied ONLY to gate anchor checks, never
+// to query building or expansion enforcement (search APIs need literal words).
+// Exact term always sorts first, so behavior is identical when the literal is
+// present; the reason text names the surface form when a synonym matched.
+const KINSHIP_FAMILIES: string[][] = [
+  // One relation family on purpose: a daughter writing about her father, a
+  // son about his mom, a spouse about their DH — same audience. Over-recall
+  // here is safe (pain signal + score floor + Muse still decide), and the
+  // reason names the surface form so nothing is hidden.
+  ["mom", "mum", "mother", "mommy", "mama", "dad", "daddy", "father", "papa",
+   "parent", "parents", "son", "daughter", "ds", "dd", "kid", "kids", "child",
+   "children", "husband", "wife", "spouse", "partner", "hubby", "dh", "dw",
+   "mil", "fil", "sibling", "siblings", "brother", "sister",
+   "loved one", "loved ones", "lo"],
+];
+const kinCache = new Map<string, string[]>();
+export function synonymsFor(term: string): string[] {
+  const t = normText(term);
+  const hit = kinCache.get(t);
+  if (hit) return hit;
+  const fam = KINSHIP_FAMILIES.find((f) => f.includes(t));
+  const out = fam ? [...fam] : [t];
+  out.sort((a, b) => (a === t ? -1 : b === t ? 1 : 0));
+  kinCache.set(t, out);
+  return out;
+}
+// First family member present in the text (exact term first), or null.
+export function matchVariant(normHaystack: string, term: string): string | null {
+  for (const v of synonymsFor(term)) if (containsTerm(normHaystack, v)) return v;
+  return null;
+}
 function significantTokens(normPhrase: string): string[] {
   return normPhrase.split(" ").filter((w) => w.length > 2 && !STOP_TOKENS.has(w));
 }
@@ -201,7 +241,7 @@ function splitAnchorTiers(profile: ProfileLike): { strong: string[]; secondary: 
   return { strong, secondary: all.filter((w) => !strong.includes(w) && w !== "show") };
 }
 
-function analyseText(rawText: string, profile: ProfileLike, channel?: string): Relevance {
+export function analyseText(rawText: string, profile: ProfileLike, channel?: string): Relevance {
   const text = normText(rawText);
   const clusters = activeClusters(profile);
   const cluster = clusters[0];
@@ -226,16 +266,45 @@ function analyseText(rawText: string, profile: ProfileLike, channel?: string): R
     }
   }
   const tiers = cluster ? { strong: [] as string[], secondary: [] as string[] } : splitAnchorTiers(profile);
-  const strongHits = tiers.strong.filter((w) => containsTerm(text, w));
-  const secondaryHits = tiers.secondary.filter((w) => containsTerm(text, w));
-  const showHnHit = !cluster && text.includes("show hn");
-  const anchorHits: string[] = cluster ? matchedTerms : [...strongHits, ...(showHnHit ? ["show hn"] : []), ...secondaryHits];
+  // Kinship-aware anchor matching: "mom" also matches "dad"/"LO"/"father" in
+  // the post. The surface form is tracked so the reason stays truthful.
+  const anchorVia = new Map<string, string>();
+  const strongHits = tiers.strong.filter((w) => { const v = matchVariant(text, w); if (v) { anchorVia.set(w, v); return true; } return false; });
+  const secondaryHits = tiers.secondary.filter((w) => { const v = matchVariant(text, w); if (v) { anchorVia.set(w, v); return true; } return false; });
+  // "show hn" anchors a post ONLY when the founder's own keywords name it
+  // (same condition `anchorTermsFor` uses to admit the phrase). A universal
+  // phrase anchor let every Show HN showcase — people announcing, not asking —
+  // clear the gate for profiles that never mention Show HN, and pitch language
+  // ("hard to", "difficult", "problem") supplied the signal.
+  const showHnWanted = keywordPhrases(profile).some((p) => normText(p).includes("show hn"));
+  const showHnHit = !cluster && showHnWanted && text.includes("show hn");
+  // One surface word = one hit: kinship synonyms mean several terms can
+  // match through the SAME word ("mom", "siblings", "children" all via
+  // "child"). Counting each would inflate the score and print words the post
+  // never contains — so hits sharing a surface form collapse to one, and the
+  // reason names surface forms (what is really in the post).
+  const surfaceOf = (t: string): string => (t === "show hn" ? t : (anchorVia.get(t) ?? normText(t)));
+  const rawHits: string[] = cluster ? [...matchedTerms] : [...strongHits, ...(showHnHit ? ["show hn"] : []), ...secondaryHits];
+  const seenSurface = new Set<string>();
+  const anchorHits = rawHits.filter((t) => {
+    const s = cluster ? normText(t) : surfaceOf(t);
+    if (seenSurface.has(s)) return false;
+    seenSurface.add(s);
+    return true;
+  });
+  const strongSet = new Set(strongHits);
+  const uniqStrong = anchorHits.filter((t) => strongSet.has(t)).length;
+  const uniqSecondary = anchorHits.length - uniqStrong - (showHnHit && anchorHits.includes("show hn") ? 1 : 0);
   const anchorPresent = cluster
     ? matchedTerms.length > 0
-    : strongHits.length > 0 || showHnHit || secondaryHits.length >= 2;
+    : uniqStrong > 0 || showHnHit || uniqSecondary >= 2;
   if (!cluster && anchorPresent && anchorHits.length) {
     score += 34 + Math.min((anchorHits.length - 1) * 5, 16);
-    parts.push(`Matched domain anchor “${anchorHits[0]}” in the post${anchorHits.length > 1 ? ` (also ${anchorHits.slice(1, 4).map((t) => `“${t}”`).join(", ")})` : ""}`);
+    const [first = ""] = anchorHits; // anchorHits.length checked above
+    const via = anchorVia.get(first);
+    const viaNote = via && via !== normText(first) ? ` (as “${via}” in the post)` : "";
+    const rest = anchorHits.slice(1, 4).map((t) => `“${surfaceOf(t)}”`).join(", ");
+    parts.push(`Matched domain anchor “${first}”${viaNote} in the post${rest ? ` (also ${rest})` : ""}`);
   }
 
   // 2. Pain signals — broad, in people's own words. Single pain words, pain
@@ -325,15 +394,71 @@ function scoreText(text: string, profile: ProfileLike): { score: number; reason:
   const a = analyseText(text, profile);
   return { score: a.score, reason: a.reason };
 }
-async function fetchJson(url: string, init?: RequestInit): Promise<{ ok: boolean; status: number; data: unknown }> {
-  try {
-    const res = await fetch(url, { ...init, headers: { "User-Agent": UA, ...(init?.headers ?? {}) } });
-    const txt = await res.text();
-    let data: unknown = null;
-    try { data = JSON.parse(txt); } catch { data = { raw: txt.slice(0, 300) }; }
-    return { ok: res.ok, status: res.status, data };
-  } catch (e) {
-    return { ok: false, status: 0, data: { error: String(e) } };
+// Retry policy (tested in smoke): GETs retry on network failure (0) or
+// 5xx, up to 2 attempts with backoff and a 20s timeout each. POSTs, 4xx,
+// and successes never retry — a failed write must never execute twice.
+export function shouldRetryFetch(status: number, method: string, attempt: number): boolean {
+  if (attempt >= 2) return false;
+  if (method !== "GET") return false;
+  return status === 0 || status >= 500;
+}
+export async function fetchJson(url: string, init?: RequestInit): Promise<{ ok: boolean; status: number; data: unknown }> {
+  const method = (init?.method ?? "GET").toUpperCase();
+  let attempt = 0;
+  for (;;) {
+    try {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 20000);
+      let res: Response;
+      try {
+        res = await fetch(url, { ...init, signal: ctrl.signal, headers: { "User-Agent": UA, ...(init?.headers ?? {}) } });
+      } finally {
+        clearTimeout(timer);
+      }
+      if (!shouldRetryFetch(res.status, method, attempt)) {
+        const txt = await res.text();
+        let data: unknown = null;
+        try { data = JSON.parse(txt); } catch { data = { raw: txt.slice(0, 300) }; }
+        return { ok: res.ok, status: res.status, data };
+      }
+    } catch (e) {
+      if (!shouldRetryFetch(0, method, attempt)) {
+        return { ok: false, status: 0, data: { error: String(e) } };
+      }
+    }
+    attempt++;
+    await Bun.sleep(400 * attempt);
+  }
+}
+// fetchText: same retry/timeout/UA policy as fetchJson, but for non-JSON
+// payloads (sitemap XML). Guards the size so a huge file fails loudly
+// instead of filling memory.
+export async function fetchText(url: string, init?: RequestInit, maxBytes = 8_000_000): Promise<{ ok: boolean; status: number; text: string }> {
+  const method = (init?.method ?? "GET").toUpperCase();
+  let attempt = 0;
+  for (;;) {
+    try {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 20000);
+      let res: Response;
+      try {
+        res = await fetch(url, { ...init, signal: ctrl.signal, headers: { "User-Agent": UA, ...(init?.headers ?? {}) } });
+      } finally {
+        clearTimeout(timer);
+      }
+      if (!shouldRetryFetch(res.status, method, attempt)) {
+        if (!res.ok) return { ok: false, status: res.status, text: "" };
+        const txt = await res.text();
+        if (txt.length > maxBytes) return { ok: false, status: 413, text: "" };
+        return { ok: true, status: res.status, text: txt };
+      }
+    } catch {
+      if (!shouldRetryFetch(0, method, attempt)) {
+        return { ok: false, status: 0, text: "" };
+      }
+    }
+    attempt++;
+    await Bun.sleep(400 * attempt);
   }
 }
 function asObj(d: unknown): Record<string, unknown> { return (d && typeof d === "object") ? (d as Record<string, unknown>) : {}; }
@@ -434,7 +559,7 @@ async function classifyForProfile(ctx: Ctx, profile: typeof schema.profiles.$inf
     const batch = pending.slice(i, i + 8);
     const items = batch.map((l, j) => `--- POST ${j + 1} (id ${l.id}, channel ${l.channel}) ---\nTitle: ${l.title}\n${l.body.slice(0, 700)}`).join("\n");
     const r = await runLlm(ctx, "small",
-      `Classify candidate seed users for a founder. The light pre-filter already confirmed a domain anchor from the profile is present in the post, plus a pain or workaround signal (or the post was a top anchored candidate passed up for your judgement) — that filter is only a safety net, NOT a relevance verdict: your classification is the real gate, so judge strictly and mark anchor-only showcases, ads and jokes irrelevant with low confidence. Your job is the judgement keywords can't do. For EACH post, return one result with its post id and judge: rightPerson (is this the target audience, in the situation described?), realPain (did they describe this pain in their own words, as their own current problem?), workaroundOrPaying (are they already hacking a workaround or paying for something imperfect?), recent (does it read as current/recent, not an old or hypothetical story?). category is one of: seed_user (right person + real pain), curious (interested or adjacent but no clear own pain), irrelevant (wrong person, selling something, joke, or not this pain). confidence is 0-100 — be honest: ambiguous posts get low confidence. The quote MUST be copied word-for-word from the post; if no phrase supports the pain, use an empty string and lower the confidence. reason: one short sentence grounded in the post. Never invent a quote. Only the public post text follows — no personal data beyond what the person posted.\nTarget profile — Audience: ${profile.audience}\nPain: ${profile.pain}\nWorkaround today: ${profile.workaround}\nProduct: ${profile.productName} — ${profile.productDesc}\n\n${items}`,
+      `Classify candidate seed users for a founder. The light pre-filter already confirmed a domain anchor from the profile is present in the post, plus a pain or workaround signal (or the post was a top anchored candidate passed up for your judgement) — that filter is only a safety net, NOT a relevance verdict: your classification is the real gate, so judge strictly and mark anchor-only showcases, ads and jokes irrelevant with low confidence. Your job is the judgement keywords can't do. For EACH post, return one result with its post id and judge: rightPerson (is this the target audience, in the situation described?), realPain (did they describe this pain in their own words, as their own current problem?), workaroundOrPaying (are they already hacking a workaround or paying for something imperfect?), recent (does it read as current/recent, not an old or hypothetical story?). category is one of: seed_user (right person + real pain), curious (interested or adjacent but no clear own pain), irrelevant (wrong person, selling something, joke, or not this pain). confidence is 0-100 — be honest: ambiguous posts get low confidence. Show HN launch announcements and founder pitches are irrelevant unless the author personally asks for help with this pain in their own words — describing a market problem ("difficult for young investors", "high entry barrier") is not the author's own pain. Some candidates come from forum thread titles only (no post body) — judge on the title alone; prefer curious unless the title itself shows the person's own pain. The quote MUST be copied word-for-word from the post; if no phrase supports the pain, use an empty string and lower the confidence. reason: one short sentence grounded in the post. Never invent a quote. Only the public post text follows — no personal data beyond what the person posted.\nTarget profile — Audience: ${profile.audience}\nPain: ${profile.pain}\nWorkaround today: ${profile.workaround}\nProduct: ${profile.productName} — ${profile.productDesc}\n\n${items}`,
       z.object({ results: z.array(z.object({ id: z.number(), category: z.string(), confidence: z.number(), reason: z.string(), quote: z.string(), rightPerson: z.boolean(), realPain: z.boolean(), workaroundOrPaying: z.boolean(), recent: z.boolean() })) }));
     if (!r.ok) { return { status: r.status, message: `${r.message} (${classified} lead${classified === 1 ? "" : "s"} classified before this batch.)`, classified, cached, lowConfidence, needsReview }; }
     for (const o of r.value.results) {
@@ -479,6 +604,312 @@ type ExpansionPlan = {
   nextSuggestions: string[];
   droppedUnanchored: number;
 };
+
+// ─── Profile-aware channel recommendations ────────────────────────────────
+// The app never defaults to the same channels for every product. Signals in
+// the founder's own profile text vote channels up or down, Muse's expansion
+// plan votes with the communities it maps, and per-profile mappings decide
+// whether Stack Exchange or a sitemap forum earns a place at all.
+const OPEN_SEARCH_CHANNELS = ["bluesky", "hackernews", "github", "stackexchange", "agingcare", "mumsnet"];
+const DEV_SIGNALS = ["software", "developer", "developers", "programmer", "coding", "github", "api", "saas", "devtools", "open source", "pull request", "codebase", "deploy", "localhost", "npm", "startup", "indie hacker", "hacker news", "tech stack", "side project", "web app", "mobile app", "launch"];
+const CAREER_SIGNALS = ["laid off", "layoff", "layoffs", "unemployed", "job search", "freelance", "freelancer", "side hustle", "passive income", "income", "career", "interview", "resume", "fired", "severance", "paycheck"];
+const ISSUE_SIGNALS = ["bug", "bugs", "error", "errors", "broken", "issue", "issues", "crash", "exception"];
+// Everyday-life topics whose biggest public conversations live on Reddit and
+// general social — not on developer channels.
+const LIFE_SIGNALS = ["parent", "parents", "baby", "kids", "pregnancy", "pregnant", "health", "patient", "caregiver", "dementia", "alzheimer", "medication", "meds", "wedding", "landlord", "tenant", "pet", "dog", "marriage", "divorce"];
+const FAMILY_SIGNALS = ["parent", "parents", "baby", "kids", "pregnancy", "pregnant", "caregiver", "dementia", "marriage", "divorce"];
+const MONEY_SIGNALS = ["income", "paycheck", "severance", "debt", "salary", "budget", "rent", "mortgage", "investing", "passive income"];
+
+function countSignals(normHaystack: string, signals: string[]): number {
+  let n = 0;
+  for (const s of signals) if (containsTerm(normHaystack, normText(s))) n++;
+  return n;
+}
+
+export type ChannelFit = "best" | "good" | "poor";
+export type ChannelRec = { channel: string; fit: ChannelFit; reasons: string[]; needsConnection: boolean };
+
+export function channelRecsFor(profile: ProfileLike, plan: ExpansionPlan | null): { recs: ChannelRec[] } {
+  const hay = normText([profile.productName, profile.productDesc, profile.audience, profile.pain, profile.workaround, profile.keywords, profile.coreAction].join(" "));
+  const cluster = activeClusters(profile)[0];
+  const isDev = countSignals(hay, DEV_SIGNALS) >= 2;
+  const isCareer = countSignals(hay, CAREER_SIGNALS) >= 2;
+  const isLife = countSignals(hay, LIFE_SIGNALS) >= 2;
+  const issueHits = countSignals(hay, ISSUE_SIGNALS);
+
+  const scores = new Map<string, { score: number; reasons: string[] }>();
+  const bump = (ch: string, delta: number, reason: string) => {
+    const r = scores.get(ch) ?? { score: 0, reasons: [] as string[] };
+    r.score += delta;
+    if (reason && !r.reasons.includes(reason)) r.reasons.push(reason);
+    scores.set(ch, r);
+  };
+  // Base: every open channel starts viable.
+  for (const ch of OPEN_SEARCH_CHANNELS) bump(ch, 0, "Open channel — searchable with no connection.");
+  // Muse's plan: each mapped community votes for its channel.
+  if (plan) {
+    for (const c of plan.communities) {
+      if (!c.name || !c.channel) continue;
+      const ch = c.channel.trim();
+      bump(ch, c.access === "closed" ? 1 : 2, `Muse mapped “${c.name}” here${c.why ? ` — ${c.why}` : ""}`);
+    }
+  }
+  // Profile shape adjustments. Developer channels need developer evidence:
+  // GitHub issues are bug reports, and Hacker News is a tech conversation —
+  // neither is where non-technical audiences report pain. A Muse expansion
+  // plan can still upgrade a channel when it maps a real community there.
+  if (cluster) {
+    bump("hackernews", -2, `Your topic is ${cluster.label}, not tech — Ask HN-style threads rarely discuss it.`);
+    bump("github", -2, `Your topic is ${cluster.label} — GitHub issues are the wrong pool.`);
+  }
+  if (isDev) {
+    bump("hackernews", 2, "Developer audience — Hacker News is where they ask for help.");
+    bump("github", issueHits > 0 ? 2 : 1, issueHits > 0 ? "Developers report this pain as GitHub issues." : "Developer audience — adjacent issue talk lives here.");
+  } else {
+    bump("github", -2, "GitHub issues are bug reports — your people don't report this pain there.");
+    if (!isCareer && !cluster) bump("hackernews", -1, "Hacker News rarely discusses this topic — a long shot unless your plan maps a community there.");
+  }
+  if (isCareer) {
+    bump("hackernews", 1, "Ask HN work threads exist for this kind of pain.");
+    bump("bluesky", 1, "Work-life talk is common on Bluesky.");
+    bump("reddit_poc", 1, "Career subreddits hold this conversation — needs your Reddit connection.");
+  }
+  if (isLife) {
+    bump("bluesky", 1, "Everyday-life talk is common on Bluesky.");
+    bump("reddit_poc", 1, "This conversation lives on Reddit most of all — needs your Reddit connection.");
+  }
+  // Stack Exchange earns its place per profile, never by default: people ask
+  // exactly this kind of question on the mapped communities — or on none.
+  const seSites = stackSitesFor(profile);
+  if (seSites.length) bump("stackexchange", 2, `People ask exactly this kind of question on ${seSites.join(" + ")} — keyless search.`);
+  else bump("stackexchange", -1, "No Stack Exchange community matches this topic — it would search blindly.");
+  // Sitemap-indexed forums earn their place per profile like SE: real
+  // threads match this topic — or no forum does.
+  const smForums = sitemapForumsFor(profile);
+  if (smForums.length) for (const f of smForums) bump(f.channel, 2, `Real threads on ${f.label} match this topic — keyless sitemap-title search, no connection needed.`);
+  else { bump("agingcare", -1, "No sitemap-indexed forum matches this topic — it would search blindly."); bump("mumsnet", -1, "No sitemap-indexed forum matches this topic — it would search blindly."); }
+
+  const rank: Record<ChannelFit, number> = { best: 0, good: 1, poor: 2 };
+  const recs: ChannelRec[] = [...scores.entries()].map(([channel, r]) => ({
+    channel,
+    fit: (r.score >= 2 ? "best" : r.score < 0 ? "poor" : "good") as ChannelFit,
+    reasons: r.reasons.length ? r.reasons : ["Named by your expansion plan."],
+    needsConnection: !OPEN_SEARCH_CHANNELS.includes(channel),
+  }));
+  recs.sort((a, b) => rank[a.fit] - rank[b.fit] || Number(a.needsConnection) - Number(b.needsConnection) || b.reasons.length - a.reasons.length);
+  return { recs };
+}
+
+// Stack Exchange per-profile site mapping (cap 2): the shared keyless quota
+// (~300 req/day/IP) is spent carefully, never on blind searches.
+export function stackSitesFor(profile: ProfileLike): string[] {
+  const hay = normText([profile.productName, profile.productDesc, profile.audience, profile.pain, profile.workaround, profile.keywords, profile.coreAction].join(" "));
+  const sites: string[] = [];
+  if (countSignals(hay, DEV_SIGNALS) >= 2) sites.push("stackoverflow");
+  if (countSignals(hay, CAREER_SIGNALS) >= 2) sites.push("workplace", "freelancing");
+  if (countSignals(hay, FAMILY_SIGNALS) >= 2) sites.push("parenting");
+  if (countSignals(hay, MONEY_SIGNALS) >= 2) sites.push("money");
+  return [...new Set(sites)].slice(0, 2);
+}
+
+export function seCandidate(o: Record<string, unknown>, site: string, profile: ProfileLike, profileId: number): { key: string; values: typeof schema.leads.$inferInsert; s: Relevance } | null {
+  const qid = String(o.question_id ?? "");
+  if (!qid) return null;
+  const who = String(asObj(o.owner).display_name ?? "");
+  const title = decodeHnText(String(o.title ?? ""));
+  const body = decodeHnText(String(o.body ?? "")).slice(0, 900);
+  const created = typeof o.creation_date === "number" ? new Date(o.creation_date * 1000).toISOString() : "";
+  const s = analyseText(`${title} ${body}`, profile, "stackexchange");
+  return {
+    key: `se:${site}:${qid}`,
+    values: {
+      profileId, channel: "stackexchange", mode: "live_post",
+      externalUrl: String(o.link ?? ""), externalId: `se:${site}:${qid}`,
+      author: who, authorHandle: who, title, body, community: site,
+      postedAt: created, matchScore: s.score, matchReason: s.reason,
+    },
+    s,
+  };
+}
+
+// ─── Sitemap-indexed forums (no API, no RSS, bot-disallowed /search) ────────
+// Some of the richest communities (AgingCare-type caregiver forums, Mumsnet
+// Talk) expose no machine API at all — but their PUBLIC sitemap files list
+// thread URLs with the thread title in the slug. Search here = fetch those
+// sitemap files (cached per section selection, polite UA, never /search,
+// never page bodies), de-slug to titles, and run the same gate. Leads are
+// TITLE-ONLY and say so in the reason; the founder verifies by opening the
+// thread. A forum is only searched when the profile's own signals map to it,
+// and only the topic sections matching the profile are fetched — never blindly.
+// Topic-defining signals count double; supporting kin/meds words count
+// single. Threshold: "dementia" + "mom" maps, but a profile that merely
+// mentions "mom and dad" (supporting only, no topic) does not.
+const ELDER_CORE = ["caregiver", "dementia", "alzheimer", "elderly", "hospice", "nursing home", "assisted living", "memory care"];
+const ELDER_KIN = ["mom", "mum", "mother", "dad", "daddy", "father", "parents", "meds", "medication", "respite", "senior care", "aging parent"];
+const MUMSNET_CORE = ["pregnancy", "pregnant", "breastfeeding", "newborn", "toddler", "miscarriage", "fertility", "postnatal"];
+const MUMSNET_KIN = ["baby", "babies", "parent", "parents", "mom", "mum", "dad", "kids", "children", "sleep", "feed", "feeding", "school", "nursery", "caregiver", "dementia", "meds", "money", "debt", "layoff", "unemployed"];
+// A section is one slice of a forum's sitemap worth fetching for a matching
+// profile: `token` must appear in the sitemap file's URL (slash-delimited so
+// "/talk/parenting/" never matches "eco-friendly-parenting"), `signals`
+// narrows it to the profile (null = the whole forum already mapped, as with
+// AgingCare's Q&A/Discussions split).
+export type SitemapSection = { token: string; signals: string[] | null };
+export type SitemapForum = { channel: string; label: string; index: string; sections: SitemapSection[]; core: string[]; kin: string[]; minScore: number; maxFiles: number; communityFor: (url: string) => string };
+function mumsnetCommunity(url: string): string {
+  const m = url.match(/\/talk\/([^/]+)\//);
+  const topic = (m?.[1] ?? "").replace(/[_-]+/g, " ").trim();
+  return topic ? `Mumsnet Talk · ${topic}` : "Mumsnet Talk";
+}
+const SITEMAP_FORUMS: SitemapForum[] = [
+  {
+    channel: "agingcare", label: "AgingCare",
+    index: "https://www.agingcare.com/sitemaps/sitemap.xml",
+    sections: [{ token: "content-questions", signals: null }, { token: "content-discussions", signals: null }],
+    communityFor: (url) => (url.includes("/discussions/") ? "AgingCare Discussions" : "AgingCare Q&A"),
+    core: ELDER_CORE, kin: ELDER_KIN, minScore: 3, maxFiles: 6,
+  },
+  {
+    channel: "mumsnet", label: "Mumsnet",
+    index: "https://www.mumsnet.com/sitemap/talk",
+    sections: [
+      { token: "/talk/parenting/", signals: ["parent", "baby", "toddler", "children", "kids"] },
+      { token: "/talk/sleep/", signals: ["sleep", "night", "nap", "tired", "feed", "routine"] },
+      { token: "/talk/pregnancy/", signals: ["pregnancy", "pregnant", "fertility", "conception"] },
+      { token: "/talk/breast_and_bottle_feeding/", signals: ["breastfeed", "bottle", "formula", "feed", "milk"] },
+      { token: "/talk/childrens_health/", signals: ["health", "doctor", "fever", "rash", "ill", "gp"] },
+      { token: "/talk/general_health/", signals: ["health", "doctor", "fever", "rash", "ill", "gp"] },
+      { token: "/talk/behaviour_development/", signals: ["behaviour", "behavior", "tantrum", "development", "milestone"] },
+      { token: "/talk/elderly_parents/", signals: ["elderly", "dementia", "caregiver", "care home"] },
+      { token: "/talk/money-matters/", signals: ["money", "debt", "budget", "rent", "mortgage", "salary"] },
+      { token: "/talk/work/", signals: ["layoff", "laid off", "unemployed", "interview", "resume", "freelance"] },
+      { token: "/talk/childcare/", signals: ["childcare", "nursery", "nanny", "childminder"] },
+    ],
+    communityFor: mumsnetCommunity,
+    core: MUMSNET_CORE, kin: MUMSNET_KIN, minScore: 2, maxFiles: 10,
+  },
+];
+export function sitemapForumsFor(profile: ProfileLike): SitemapForum[] {
+  const hay = normText([profile.productName, profile.productDesc, profile.audience, profile.pain, profile.workaround, profile.keywords, profile.coreAction].join(" "));
+  return SITEMAP_FORUMS.filter((f) => countSignals(hay, f.core) * 2 + countSignals(hay, f.kin) >= f.minScore);
+}
+// Section filter (pure, tested): which sitemap files deserve a fetch for
+// THIS profile. Runs at every index level, so one code path serves flat
+// sitemaps (AgingCare) and nested topic indexes (Mumsnet).
+export function filterSitemapLocs(forum: SitemapForum, locs: string[], profile: ProfileLike): string[] {
+  const hay = normText([profile.productName, profile.productDesc, profile.audience, profile.pain, profile.workaround, profile.keywords, profile.coreAction].join(" "));
+  return locs.filter((u) => forum.sections.some((s) => u.includes(s.token) && (!s.signals || countSignals(hay, s.signals) >= 1)));
+}
+// Minimal sitemap reader (no XML library — sitemaps are a flat shape):
+// `<url><loc>…</loc><lastmod>…</lastmod></url>`, same for `<sitemap>` index rows.
+export function sitemapLocs(xml: string, tag: "url" | "sitemap", cap = 20000): { loc: string; lastmod: string }[] {
+  const out: { loc: string; lastmod: string }[] = [];
+  const re = new RegExp(`<${tag}>\\s*<loc>([^<]+)<\\/loc>(?:\\s*<lastmod>([^<]+)<\\/lastmod>)?`, "g");
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(xml)) && out.length < cap) {
+    const [, loc = "", lastmod = ""] = m;
+    out.push({ loc: loc.trim(), lastmod: lastmod.trim() });
+  }
+  return out;
+}
+// Thread title from a slug URL: last path segment, minus extension and
+// numeric id (trailing "-123456" or, Mumsnet-style, leading "123456-"),
+// hyphens back to spaces. Returns "" when nothing title-like remains, so
+// index/asset URLs never become candidates.
+export function slugTitleFor(url: string): string {
+  // Strip scheme+host first so a bare domain never de-slugs to its hostname.
+  const [preQ = ""] = url.split("?");
+  const [preHash = ""] = preQ.split("#");
+  const path = preHash.replace(/^https?:\/\/[^/]+/i, "");
+  const seg = path.split("/").filter(Boolean).pop() ?? "";
+  if (!seg) return "";
+  // Leading ids are long (Mumsnet thread ids); a short leading number is an
+  // age ("27-years-old…"), not an id — keep it.
+  const words = seg.replace(/\.html?$/i, "").replace(/-\d{4,}$/, "").replace(/^\d{5,}-/, "").replace(/[^a-zA-Z0-9]+/g, " ").replace(/\s+/g, " ").trim();
+  return words.length >= 12 ? words : "";
+}
+export type SitemapEntry = { url: string; title: string; lastmod: string; community: string };
+const sitemapCache = new Map<string, { at: number; entries: SitemapEntry[] }>();
+const SITEMAP_TTL_MS = 24 * 3600 * 1000;
+const SITEMAP_MAX_ENTRIES = 60000;
+async function fetchSitemapEntries(forum: SitemapForum, profile: ProfileLike): Promise<{ entries: SitemapEntry[] } | { error: string }> {
+  const idx0 = await fetchText(forum.index);
+  if (!idx0.ok) return { error: `Sitemap index unreachable (HTTP ${idx0.status}).` };
+  const level0 = filterSitemapLocs(forum, sitemapLocs(idx0.text, "sitemap").map((e) => e.loc), profile);
+  if (!level0.length) return { error: "No sitemap sections match this profile's topic — skipped instead of searching blindly." };
+  // Cache key includes the section selection: different profiles legitimately
+  // fetch different topic slices of the same forum.
+  const cacheKey = `${forum.channel}:${[...level0].sort().join("|")}`;
+  const hit = sitemapCache.get(cacheKey);
+  if (hit && Date.now() - hit.at < SITEMAP_TTL_MS) return { entries: hit.entries };
+  const entries: SitemapEntry[] = [];
+  let fetches = 0;
+  let level = level0;
+  // Two levels: a flat index (AgingCare) resolves on the first pass; a
+  // nested index (Mumsnet topics → per-topic files) resolves on the second.
+  // Detection is by content (<sitemapindex> vs <urlset>), never assumed.
+  for (let depth = 0; depth < 2 && level.length && entries.length < SITEMAP_MAX_ENTRIES; depth++) {
+    const next: string[] = [];
+    for (const loc of level) {
+      if (fetches >= forum.maxFiles || entries.length >= SITEMAP_MAX_ENTRIES) break;
+      if (loc === forum.index) continue;
+      const r = await fetchText(loc);
+      fetches++;
+      if (!r.ok) continue; // one bad file doesn't sink the channel
+      if (r.text.includes("<sitemapindex")) {
+        for (const u of filterSitemapLocs(forum, sitemapLocs(r.text, "sitemap").map((e) => e.loc), profile)) {
+          if (u !== forum.index && !next.includes(u)) next.push(u);
+        }
+      } else {
+        for (const e of sitemapLocs(r.text, "url")) {
+          const title = slugTitleFor(e.loc);
+          if (!title) continue;
+          entries.push({ url: e.loc, title, lastmod: e.lastmod, community: forum.communityFor(e.loc) });
+        }
+      }
+    }
+    level = next.slice(0, forum.maxFiles);
+  }
+  if (!entries.length) return { error: "Sitemap files yielded no thread titles." };
+  sitemapCache.set(cacheKey, { at: Date.now(), entries });
+  return { entries };
+}
+export function sitemapCandidate(entry: SitemapEntry, forum: SitemapForum, profile: ProfileLike, profileId: number): { key: string; values: typeof schema.leads.$inferInsert; s: Relevance } | null {
+  if (!entry.title) return null;
+  const s = analyseText(entry.title, profile, forum.channel);
+  return {
+    key: `${forum.channel}:${entry.url}`,
+    values: {
+      profileId, channel: forum.channel, mode: "live_post",
+      externalUrl: entry.url, externalId: `${forum.channel}:${entry.url}`,
+      author: "", authorHandle: "", title: entry.title, body: "",
+      community: entry.community, postedAt: entry.lastmod,
+      matchScore: s.score,
+      matchReason: `${s.reason}${s.reason ? " " : ""}Thread-title match on ${forum.label} — no post body is available to the search; open the thread to verify before replying.`,
+    },
+    s,
+  };
+}
+
+// Progress writer for a search run: the UI polls searchRunStatus while the
+// search is in flight, so the founder sees real phases, not one spinner.
+async function startSearchRun(db: Db, profileId: number, kind: string): Promise<number> {
+  const r = await db.insert(schema.searchRuns).values({ profileId, kind, phase: "expanding", detail: "Planning where to look…" }).returning({ id: schema.searchRuns.id });
+  return r[0]?.id ?? 0;
+}
+async function touchSearchRun(db: Db, runId: number, phase: string, detail: string, counts?: { found?: number; created?: number; synthesized?: number }): Promise<void> {
+  if (!runId) return;
+  await db.update(schema.searchRuns).set({ phase, detail, ...(counts ?? {}) }).where(eq(schema.searchRuns.id, runId));
+}
+
+const FOLLOWUP_DUE_MS = 3 * 24 * 3600 * 1000;
+// One open nudge per sent lead: check for a reply in a few days. Never
+// duplicates an already-open nudge, never resurrects a stopped one.
+async function ensureFollowup(db: Db, leadId: number, profileId: number): Promise<void> {
+  const rows = await db.select().from(schema.followups).where(eq(schema.followups.leadId, leadId));
+  if (rows.some((f) => !f.doneAt && !f.stopped)) return;
+  if (rows.some((f) => f.stopped)) return;
+  await db.insert(schema.followups).values({ leadId, profileId, dueAt: new Date(Date.now() + FOLLOWUP_DUE_MS) });
+}
 
 function anchorTermsFor(profile: ProfileLike): { anchorTerm: string; terms: string[] } {
   const clusters = activeClusters(profile);
@@ -536,7 +967,7 @@ async function generateExpansionRound(
   const painPhrasesSaved: string[] = (() => { try { const v = JSON.parse(profile.painPhrases || "[]") as unknown; return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : []; } catch { return []; } })();
   const isLaterRound = round > 1;
   const r = await runLlm(ctx, "small",
-    `You are planning WHERE to find seed users for a founder — not just rewording one keyword. Build a search expansion plan from this target profile.\n\nProfile — Product: ${profile.productName} — ${profile.productDesc}\nAudience: ${profile.audience}\nPain (founder's words): ${profile.pain}\nWorkaround today: ${profile.workaround}\nFounder keywords: ${profile.keywords}\nCore action: ${profile.coreAction}\nPain phrases already known: ${painPhrasesSaved.join(" · ") || "(none yet)"}\n\nDOMAIN ANCHOR (hard rule): the anchor term is "${anchorTerm}". Valid anchor terms for queries: ${terms.join(", ")}. EVERY query you return MUST contain at least one of those anchor terms, word-for-word. A query made only of generic words (like "skill", "struggle", "help", "sucks", "beginner") is forbidden — unanchored queries are discarded server-side. If you broaden, broaden the pain/audience/community around the anchor, never drop the anchor.\n\nReturn:\n- anchorTerm: exactly "${anchorTerm}".\n- queries: ${isLaterRound ? "6-8" : "5-7"} search queries a real person in pain might match — variants and synonyms in the person's own language, each with a one-line intent. Cover different phrasings of the pain, the workaround, and beginner/first-time framings — all anchored.\n- painPhrases: 5-8 related pain phrases and adjacent problem phrasings in their words (these inform the founder; they are not all queries).\n- adjacentProblems: 3-5 adjacent problems the same person hits around this pain.\n- adjacentAudiences: 3-5 adjacent audiences — people one step wider than the profile who plausibly hit the same anchored pain.\n- communities: 5-8 specific places these people already talk — name the actual kind of place (e.g. for a beauty profile: beginner makeup subreddits, beauty forums, tutorial comment sections, beginner beauty groups/hashtags). For each: name, where (platform/place), channel — one of bluesky, hackernews, github, reddit_poc, reddit, x, facebook, discord, slack, linkedin, instagram, youtube — access: "open" if it is a public searchable channel EarlyProof searches by default, "closed" if the founder must provide an API/connection or join and send themselves, and why this place fits.\n- relaxations: 2-4 specific over-strict terms or exact phrases from the profile/keywords that could be relaxed WITHOUT dropping the anchor (name the exact term and what to relax it to).\n- nextSuggestions: 3-5 concrete next expansion moves if this round still returns 0 synthesized results — broaden to an adjacent audience or adjacent pain (still anchored), try a different named channel or community, relax a named over-strict term.\n${isLaterRound ? `\nThis is expansion round ${round}. The previous search context: ${context.reason} It found ${context.found} candidates, the pre-filter dropped ${context.discarded}, Muse synthesized ${context.synthesized} results, and ${context.seenCount} leads are already seen (new results are deduplicated against them — do not repeat old queries). Previous rounds already tried these queries: ${previousQueries.join(" · ") || "(none)"}. Your new queries must be DIFFERENT from those: lean on the adjacent audiences, adjacent pains, new communities and the relaxations — while keeping every query anchored to "${anchorTerm}".` : `\nThis is expansion round 1, generated before the search runs.`}`,
+    `You are planning WHERE to find seed users for a founder — not just rewording one keyword. Build a search expansion plan from this target profile.\n\nProfile — Product: ${profile.productName} — ${profile.productDesc}\nAudience: ${profile.audience}\nPain (founder's words): ${profile.pain}\nWorkaround today: ${profile.workaround}\nFounder keywords: ${profile.keywords}\nCore action: ${profile.coreAction}\nPain phrases already known: ${painPhrasesSaved.join(" · ") || "(none yet)"}\n\nDOMAIN ANCHOR (hard rule): the anchor term is "${anchorTerm}". Valid anchor terms for queries: ${terms.join(", ")}. EVERY query you return MUST contain at least one of those anchor terms, word-for-word. A query made only of generic words (like "skill", "struggle", "help", "sucks", "beginner") is forbidden — unanchored queries are discarded server-side. If you broaden, broaden the pain/audience/community around the anchor, never drop the anchor.\n\nReturn:\n- anchorTerm: exactly "${anchorTerm}".\n- queries: ${isLaterRound ? "6-8" : "5-7"} search queries a real person in pain might match — variants and synonyms in the person's own language, each with a one-line intent. Cover different phrasings of the pain, the workaround, and beginner/first-time framings — all anchored.\n- painPhrases: 5-8 related pain phrases and adjacent problem phrasings in their words (these inform the founder; they are not all queries).\n- adjacentProblems: 3-5 adjacent problems the same person hits around this pain.\n- adjacentAudiences: 3-5 adjacent audiences — people one step wider than the profile who plausibly hit the same anchored pain.\n- communities: 5-8 specific places these people already talk — name the actual kind of place (e.g. for a beauty profile: beginner makeup subreddits, beauty forums, tutorial comment sections, beginner beauty groups/hashtags; for a caregiver profile: AgingCare Q&A and Discussions threads, Mumsnet elderly_parents threads). For each: name, where (platform/place), channel — one of bluesky, hackernews, github, stackexchange, agingcare, mumsnet, reddit_poc, reddit, x, facebook, discord, slack, linkedin, instagram, youtube (use stackexchange only for Q&A-style communities, agingcare for caregiver/elder-care forum threads, mumsnet for parenting/family forum threads) — access: "open" if it is a public searchable channel EarlyProof searches by default, "closed" if the founder must provide an API/connection or join and send themselves, and why this place fits.\n- relaxations: 2-4 specific over-strict terms or exact phrases from the profile/keywords that could be relaxed WITHOUT dropping the anchor (name the exact term and what to relax it to).\n- nextSuggestions: 3-5 concrete next expansion moves if this round still returns 0 synthesized results — broaden to an adjacent audience or adjacent pain (still anchored), try a different named channel or community, relax a named over-strict term.\n${isLaterRound ? `\nThis is expansion round ${round}. The previous search context: ${context.reason} It found ${context.found} candidates, the pre-filter dropped ${context.discarded}, Muse synthesized ${context.synthesized} results, and ${context.seenCount} leads are already seen (new results are deduplicated against them — do not repeat old queries). Previous rounds already tried these queries: ${previousQueries.join(" · ") || "(none)"}. Your new queries must be DIFFERENT from those: lean on the adjacent audiences, adjacent pains, new communities and the relaxations — while keeping every query anchored to "${anchorTerm}".` : `\nThis is expansion round 1, generated before the search runs.`}`,
     expansionPlanSchema);
   if (!r.ok) return r;
   const o = r.value;
@@ -554,7 +985,7 @@ async function generateExpansionRound(
     adjacentAudiences: cleanStrs(o.adjacentAudiences, 5),
     communities: o.communities.slice(0, 8).map((c) => ({
       name: c.name.trim().slice(0, 120), where: c.where.trim().slice(0, 120),
-      channel: ["bluesky", "hackernews", "github", "reddit_poc", "reddit", "x", "facebook", "discord", "slack", "linkedin", "instagram", "youtube", "manual"].includes(c.channel.trim()) ? c.channel.trim() : "manual",
+      channel: ["bluesky", "hackernews", "github", "stackexchange", "agingcare", "mumsnet", "reddit_poc", "reddit", "x", "facebook", "discord", "slack", "linkedin", "instagram", "youtube", "manual"].includes(c.channel.trim()) ? c.channel.trim() : "manual",
       access: c.access.trim().toLowerCase() === "closed" ? "closed" : "open",
       why: c.why.trim().slice(0, 240),
     })).filter((c) => c.name),
@@ -618,7 +1049,11 @@ async function ensureReddit(ctx: Ctx): Promise<{ access: string; handle: string 
   const rows = await db.select().from(schema.connections).where(eq(schema.connections.channel, "reddit_poc"));
   const c = rows[0];
   if (!c || !c.accessJwt) return { error: "Reddit POC is not connected. Connect it in Channels first." };
-  if (c.expiresAt && Date.now() > c.expiresAt - 60000 && c.refreshJwt && c.clientId) {
+  // Fail closed: an expired script-flow token with no refresh path must never
+  // be handed out as if it worked — every Reddit call made with it would
+  // fail, and the founder would blame the search instead of the connection.
+  if (c.expiresAt && Date.now() > c.expiresAt - 60000) {
+    if (!c.refreshJwt || !c.clientId) return { error: "Reddit POC session expired and cannot refresh itself. Reconnect in Channels." };
     const basic = Buffer.from(`${c.clientId}:${c.clientSecret}`).toString("base64");
     const body = new URLSearchParams({ grant_type: "refresh_token", refresh_token: c.refreshJwt });
     const r = await fetchJson("https://www.reddit.com/api/v1/access_token", { method: "POST", headers: { Authorization: `Basic ${basic}`, "Content-Type": "application/x-www-form-urlencoded" }, body: body.toString() });
@@ -683,7 +1118,10 @@ async function runChannelSearch(
     for (const l of existingAll) if (!remainingIds.has(l.id)) prunedIds.add(l.id);
   }
   const existing = existingAll.filter((l) => !prunedIds.has(l.id));
-  const seen = new Set(existing.map((l) => l.externalUrl).filter(Boolean));
+  // Dedup by stable post ID as well as URL: the Bluesky URL embeds the
+  // author's handle (which can change), while the post URI in externalId does
+  // not. Checking only the URL lets a re-scraped post through as "new".
+  const seen = new Set([...existing.map((l) => l.externalUrl), ...existing.map((l) => l.externalId)].filter(Boolean));
   const errors: { channel: string; message: string }[] = [];
 
   type Cand = { key: string; values: typeof schema.leads.$inferInsert; score: number; keep: boolean; anchorPresent: boolean; reason: string };
@@ -696,7 +1134,45 @@ async function runChannelSearch(
   };
 
   for (const ch of channels) {
-    if (ch === "hackernews") {
+    if (ch === "stackexchange") {
+      // Stack Exchange: keyless full-text question search, but ONLY across
+      // the communities that fit THIS profile (mapped from its signals, never
+      // hardcoded). Shared free quota (~300 req/day/IP): two queries per site.
+      const sites = stackSitesFor(profile);
+      if (!sites.length) { errors.push({ channel: "Stack Exchange", message: "No Stack Exchange community matches this profile's topic — skipped instead of searching blindly." }); continue; }
+      let failed = false;
+      for (const site of sites) {
+        for (const query of queries.slice(0, 2)) {
+          if (failed) break;
+          const r = await fetchJson(`https://api.stackexchange.com/2.3/search/advanced?order=desc&sort=relevance&q=${encodeURIComponent(query)}&site=${site}&filter=withbody&pagesize=20`);
+          const d = asObj(r.data);
+          if (!r.ok) { errors.push({ channel: "Stack Exchange", message: d.error_id === 502 ? "Stack Exchange throttled the shared free quota — retry later today." : `Search failed (HTTP ${r.status}).` }); failed = true; continue; }
+          if (((d.quota_remaining as number | undefined) ?? 1) === 0) { errors.push({ channel: "Stack Exchange", message: "Stack Exchange free quota exhausted for today — retry tomorrow." }); failed = true; continue; }
+          const items = (d.items as unknown[]) ?? [];
+          for (const it of items.slice(0, 20)) {
+            const c = seCandidate(asObj(it), site, profile, profile.id);
+            if (!c) continue;
+            addCandidate(c.key, c.values, c.s);
+          }
+        }
+      }
+    } else if (ch === "agingcare" || ch === "mumsnet") {
+      // Sitemap-indexed forums: no API, no RSS, bot-disallowed /search — but
+      // public sitemaps with thread titles in the slugs. Scored title-only;
+      // the candidate reason says so, and the founder verifies by opening
+      // the thread. Skipped (never blind) when no forum maps to the profile.
+      const forums = sitemapForumsFor(profile).filter((f) => f.channel === ch);
+      if (!forums.length) { errors.push({ channel: ch === "mumsnet" ? "Mumsnet" : "AgingCare", message: "No sitemap-indexed forum matches this profile's topic — skipped instead of searching blindly." }); continue; }
+      for (const forum of forums) {
+        const r = await fetchSitemapEntries(forum, profile);
+        if ("error" in r) { errors.push({ channel: forum.label, message: r.error }); continue; }
+        for (const e of r.entries) {
+          const c = sitemapCandidate(e, forum, profile, profile.id);
+          if (!c) continue;
+          addCandidate(c.key, c.values, c.s);
+        }
+      }
+    } else if (ch === "hackernews") {
       let failed = false;
       // FirstFeedback: HN runs ONLY the help-request phrases against the
       // ask_hn tag with relevance ranking. Every other profile keeps the
@@ -810,7 +1286,8 @@ async function runChannelSearch(
   let created = 0;
   for (const cand of selected) {
     const url = cand.values.externalUrl ?? "";
-    if (url && seen.has(url)) continue; // already stored from an earlier search — not new, not discarded
+    const extId = cand.values.externalId ?? "";
+    if ((url && seen.has(url)) || (extId && seen.has(extId))) continue; // already stored from an earlier search — not new, not discarded
     const isPromoted = !cand.keep;
     await db.insert(schema.leads).values({
       ...cand.values,
@@ -819,14 +1296,15 @@ async function runChannelSearch(
         : cand.reason,
     });
     if (url) seen.add(url);
+    if (extId) seen.add(extId);
     created++;
   }
   const discarded = sorted.filter((c) => !selectedKeys.has(c.key)).length;
   return { created, found, discarded, pruned, promoted, errors };
 }
 
-const searchResponse = z.object({ created: z.number(), found: z.number(), discarded: z.number(), pruned: z.number(), promoted: z.number(), synthesized: z.number(), synthesisStatus: z.string(), synthesisMessage: z.string(), errors: z.array(z.object({ channel: z.string(), message: z.string() })), expansionRound: z.number(), expansionAnchor: z.string(), expansionQueries: z.array(z.string()), expansionGenerated: z.boolean(), nextSuggestions: z.array(z.string()) });
-const emptySearch = { created: 0, found: 0, discarded: 0, pruned: 0, promoted: 0, synthesized: 0, expansionRound: 0, expansionAnchor: "", expansionQueries: [] as string[], expansionGenerated: false, nextSuggestions: [] as string[] };
+const searchResponse = z.object({ runId: z.number(), created: z.number(), found: z.number(), discarded: z.number(), pruned: z.number(), promoted: z.number(), synthesized: z.number(), synthesisStatus: z.string(), synthesisMessage: z.string(), errors: z.array(z.object({ channel: z.string(), message: z.string() })), expansionRound: z.number(), expansionAnchor: z.string(), expansionQueries: z.array(z.string()), expansionGenerated: z.boolean(), nextSuggestions: z.array(z.string()) });
+const emptySearch = { runId: 0, created: 0, found: 0, discarded: 0, pruned: 0, promoted: 0, synthesized: 0, expansionRound: 0, expansionAnchor: "", expansionQueries: [] as string[], expansionGenerated: false, nextSuggestions: [] as string[] };
 
 const leadOut = z.object({
   id: z.number(), profileId: z.number(), channel: z.string(), mode: z.string(), externalUrl: z.string(),
@@ -841,6 +1319,20 @@ const feedbackOut = z.object({ id: z.number(), profileId: z.number(), seedName: 
 const summaryOut = z.object({ id: z.number(), profileId: z.number(), kind: z.string(), content: z.string(), created_at: z.string() });
 
 export const Actions = {
+  getVersion: defineAction({
+    request: z.object({}),
+    response: z.object({ version: z.string(), sha: z.string(), dirty: z.boolean(), label: z.string() }),
+    async handler() {
+      let sha = "unknown";
+      let dirty = false;
+      try {
+        sha = (await Bun.$`git rev-parse --short HEAD`.quiet().text()).trim() || "unknown";
+        dirty = (await Bun.$`git status --short`.quiet().text()).trim().length > 0;
+      } catch { /* git unavailable (artifact runtime) — label stays version-only */ }
+      return { version: PKG_VERSION, sha, dirty, label: `${PKG_VERSION} · ${sha}${dirty ? " · dirty" : ""}` };
+    },
+  }),
+
   getState: defineAction({
     request: z.object({}),
     response: z.object({
@@ -854,6 +1346,7 @@ export const Actions = {
       events: z.array(z.object({ id: z.number(), inviteId: z.number(), profileId: z.number(), eventType: z.string(), source: z.string(), note: z.string(), occurred_at: z.string() })),
       expansions: z.array(z.object({ id: z.number(), profileId: z.number(), round: z.number(), anchorTerm: z.string(), plan: z.string(), created_at: z.string() })),
       connections: z.array(z.object({ channel: z.string(), handle: z.string(), connected: z.boolean() })),
+      followups: z.array(z.object({ id: z.number(), leadId: z.number(), profileId: z.number(), dueAt: z.string() })),
       posthog: z.array(z.object({ profileId: z.number(), host: z.string(), projectId: z.string(), hasKey: z.boolean(), startedEvent: z.string(), coreEvent: z.string(), returnedEvent: z.string(), paidEvent: z.string(), referredEvent: z.string() })),
     }),
     async handler(ctx) {
@@ -870,6 +1363,8 @@ export const Actions = {
       const feedback = await db.select().from(schema.feedbackEntries).orderBy(desc(schema.feedbackEntries.id));
       const summaries = await db.select().from(schema.llmSummaries).orderBy(desc(schema.llmSummaries.id));
       const expansions = await db.select().from(schema.searchExpansions).orderBy(desc(schema.searchExpansions.id));
+      const followupRows = await db.select().from(schema.followups).orderBy(desc(schema.followups.id));
+      const followups = followupRows.filter((f) => !f.doneAt && !f.stopped);
       return {
         expansions: expansions.map(expansionShape),
         llm: {
@@ -890,6 +1385,7 @@ export const Actions = {
         invites: invites.map((i) => ({ id: i.id, profileId: i.profileId, leadId: i.leadId ?? null, code: i.code, label: i.label, seedName: i.seedName, created_at: i.createdAt.toISOString() })),
         events: events.map((e) => ({ id: e.id, inviteId: e.inviteId, profileId: e.profileId, eventType: e.eventType, source: e.source, note: e.note, occurred_at: e.occurredAt.toISOString() })),
         connections: conns.map((c) => ({ channel: c.channel, handle: c.handle, connected: !!(c.accessJwt || c.token) })),
+        followups: followups.map((f) => ({ id: f.id, leadId: f.leadId, profileId: f.profileId, dueAt: f.dueAt.toISOString() })),
         posthog: ph.map((p) => ({ profileId: p.profileId, host: p.host, projectId: p.projectId, hasKey: !!p.apiKey, startedEvent: p.startedEvent, coreEvent: p.coreEvent, returnedEvent: p.returnedEvent, paidEvent: p.paidEvent, referredEvent: p.referredEvent })),
       };
     },
@@ -930,9 +1426,74 @@ export const Actions = {
       await db.delete(schema.feedbackEntries).where(eq(schema.feedbackEntries.profileId, args.id));
       await db.delete(schema.llmSummaries).where(eq(schema.llmSummaries.profileId, args.id));
       await db.delete(schema.searchExpansions).where(eq(schema.searchExpansions.profileId, args.id));
+      await db.delete(schema.searchRuns).where(eq(schema.searchRuns.profileId, args.id));
+      await db.delete(schema.followups).where(eq(schema.followups.profileId, args.id));
       await db.delete(schema.profiles).where(eq(schema.profiles.id, args.id));
       ctx.invalidateQueries();
       return { ok: true };
+    },
+  }),
+
+  // Demo mode: one tap seeds a full loop (profile + leads + invite + events)
+  // on an empty workspace so a founder sees every tab alive. Refuses when
+  // the workspace is already taken — demo data must never mix with real data.
+  seedDemoData: defineAction({
+    request: z.object({}),
+    response: z.object({ ok: z.boolean(), profileId: z.number(), message: z.string() }),
+    async handler(ctx) {
+      const db = ctx.db<typeof schema>();
+      if ((await db.select().from(schema.profiles)).length) return { ok: false, profileId: 0, message: "Workspace already has profiles — demo seeds only on an empty workspace." };
+      const pr = await db.insert(schema.profiles).values({
+        productName: "SecondShift", productDesc: "Side-hustle finder for laid-off workers",
+        audience: "Recently laid-off workers who need income now", pain: "Laid off with bills due, no idea where to start for a side hustle",
+        workaround: "Applying to hundreds of jobs with no response", keywords: "laid off, side hustle, freelance gigs",
+        coreAction: "Applied to a starter gig through a friend",
+      }).returning({ id: schema.profiles.id });
+      const pid = pr[0]?.id ?? 0;
+      const sig = JSON.stringify({ rightPerson: true, realPain: true, workaroundOrPaying: true, recent: true });
+      const a = await db.insert(schema.leads).values({
+        profileId: pid, channel: "bluesky", mode: "live_post",
+        externalUrl: "https://bsky.app/profile/demo.bsky.social/post/demo01", externalId: "demo-a",
+        author: "Riley", authorHandle: "riley.bsky.social", title: "",
+        body: "Laid off last Friday with rent due in two weeks. Everyone says learn to code but I need money now, not in six months.",
+        postedAt: new Date().toISOString(), matchScore: 74,
+        matchReason: "Demo lead — matched “laid off” plus pain signals.",
+        draftBody: "Your post hit home — I built SecondShift for this exact spot. Open to trying it for one gig?",
+        status: "sent", llmCategory: "seed_user", llmConfidence: 82,
+        llmReason: "Laid-off worker describing their own pain in their own words.",
+        llmQuote: "need money now, not in six months", llmSignals: sig,
+      }).returning({ id: schema.leads.id });
+      const bBody = "Laid off in March, applied to 200 jobs with two callbacks. Trying freelance gigs now but don't know where to start.";
+      await db.insert(schema.leads).values({
+        profileId: pid, channel: "bluesky", mode: "live_post",
+        externalUrl: "https://bsky.app/profile/demo.bsky.social/post/demo02", externalId: "demo-b",
+        author: "Mara", authorHandle: "mara.bsky.social", title: "", body: bBody,
+        postedAt: new Date().toISOString(), matchScore: 70,
+        matchReason: "Demo lead — matched “freelance” plus pain signals.",
+        status: "new", llmCategory: "curious", llmConfidence: 55,
+        llmReason: "Laid-off worker trying workarounds, asking where to start.",
+        llmQuote: "don't know where to start", llmSignals: sig,
+      });
+      const cBody = "Took a starter gig through a friend, got paid, now looking for steady freelance work.";
+      const c = await db.insert(schema.leads).values({
+        profileId: pid, channel: "manual", mode: "guided",
+        externalUrl: "", externalId: "demo-c",
+        author: "Devon", authorHandle: "Devon", title: "", body: cBody, community: "Demo group",
+        postedAt: new Date().toISOString(), matchScore: 72,
+        matchReason: "Demo lead — did the core action.",
+        status: "trial", llmCategory: "seed_user", llmConfidence: 80,
+        llmReason: "Did the core action and keeps going.",
+        llmQuote: "got paid, now looking for steady freelance work", llmSignals: sig,
+      }).returning({ id: schema.leads.id });
+      const cId = c[0]?.id ?? 0;
+      const inv = await db.insert(schema.invites).values({ profileId: pid, leadId: cId, code: "DEMO-01", label: "Devon", seedName: "Devon" }).returning({ id: schema.invites.id });
+      const invId = inv[0]?.id ?? 0;
+      await db.insert(schema.cohortEvents).values({ inviteId: invId, profileId: pid, eventType: "started", source: "manual", note: "demo" });
+      await db.insert(schema.cohortEvents).values({ inviteId: invId, profileId: pid, eventType: "core", source: "manual", note: "demo" });
+      const aId = a[0]?.id ?? 0;
+      if (aId) await ensureFollowup(db, aId, pid);
+      ctx.invalidateQueries();
+      return { ok: true, profileId: pid, message: "Demo workspace seeded — profile, leads, invite, events and one reply nudge." };
     },
   }),
 
@@ -954,21 +1515,34 @@ export const Actions = {
       // open channels by default, plus any closed channel the founder has
       // connected and selected (an unconnected closed channel only adds a
       // note — it never blocks the open search).
+      const runId = await startSearchRun(db, profile.id, "search");
       const exp = await ensureExpansionPlan(ctx, profile);
-      if (!exp.ok) return { ...emptySearch, synthesisStatus: exp.status, synthesisMessage: exp.message, errors: [{ channel: "Muse expansion", message: exp.message }] };
+      if (!exp.ok) {
+        await touchSearchRun(db, runId, "done", exp.message);
+        return { ...emptySearch, runId, synthesisStatus: exp.status, synthesisMessage: exp.message, errors: [{ channel: "Muse expansion", message: exp.message }] };
+      }
       const { terms } = anchorTermsFor(profile);
       const original = searchQueryFor(profile);
       const queries = [...new Set([original, ...exp.plan.queries.map((q) => q.query)])]
         .filter((q) => queryIsAnchored(q, terms))
         .slice(0, 6);
       const usable = queries.length ? queries : [original];
+      // Never fall back to an empty or unanchored query: it would run a
+      // match-everything search. Fail open with an explanation instead.
+      if (!usable.length || !usable.some((q) => queryIsAnchored(q, terms))) {
+        await touchSearchRun(db, runId, "done", "No anchored query to search — nothing was searched.");
+        return { ...emptySearch, runId, synthesisStatus: "error", synthesisMessage: "No anchored query to search — nothing was searched.", errors: [{ channel: "setup", message: "No anchored query to search — nothing was searched." }] };
+      }
+      await touchSearchRun(db, runId, "searching", `Searching ${args.channels.length} channel(s)…`);
       const run = await runChannelSearch(ctx, profile, args.channels, args.subreddits, usable);
       // Step 4 — LLM synthesis runs automatically before any result is shown.
+      await touchSearchRun(db, runId, "synthesizing", `Synthesizing ${run.created} candidate(s) with Muse…`, { found: run.found, created: run.created });
       const synth = await classifyForProfile(ctx, profile);
       const errors = [...run.errors];
       if (synth.status !== "ok") errors.push({ channel: "Muse synthesis", message: synth.message });
+      await touchSearchRun(db, runId, "done", `Checked ${run.found} posts, ${run.created} looked like your people.`, { found: run.found, created: run.created, synthesized: synth.classified + synth.cached });
       ctx.invalidateQueries();
-      return { created: run.created, found: run.found, discarded: run.discarded, pruned: run.pruned, promoted: run.promoted, synthesized: synth.classified + synth.cached, synthesisStatus: synth.status, synthesisMessage: synth.message, errors, expansionRound: exp.round, expansionAnchor: exp.plan.anchorTerm, expansionQueries: usable, expansionGenerated: exp.generated, nextSuggestions: exp.plan.nextSuggestions };
+      return { runId, created: run.created, found: run.found, discarded: run.discarded, pruned: run.pruned, promoted: run.promoted, synthesized: synth.classified + synth.cached, synthesisStatus: synth.status, synthesisMessage: synth.message, errors, expansionRound: exp.round, expansionAnchor: exp.plan.anchorTerm, expansionQueries: usable, expansionGenerated: exp.generated, nextSuggestions: exp.plan.nextSuggestions };
     },
   }),
 
@@ -995,14 +1569,21 @@ export const Actions = {
           : `The founder asked to widen the search beyond the ${synthesizedNow} synthesized result(s) found so far.`,
         found: leadsNow.length, discarded: 0, synthesized: synthesizedNow, seenCount: leadsNow.length,
       });
-      if (!gen.ok) return { ...emptySearch, synthesisStatus: gen.status, synthesisMessage: gen.message, errors: [{ channel: "Muse expansion", message: gen.message }] };
+      const runId = await startSearchRun(db, profile.id, "expand");
+      if (!gen.ok) {
+        await touchSearchRun(db, runId, "done", gen.message);
+        return { ...emptySearch, runId, synthesisStatus: gen.status, synthesisMessage: gen.message, errors: [{ channel: "Muse expansion", message: gen.message }] };
+      }
       const queries = gen.plan.queries.map((q) => q.query).slice(0, 6);
+      await touchSearchRun(db, runId, "searching", `Searching ${args.channels.length} channel(s) with round ${gen.round} queries…`);
       const run = await runChannelSearch(ctx, profile, args.channels, args.subreddits, queries);
+      await touchSearchRun(db, runId, "synthesizing", `Synthesizing ${run.created} candidate(s) with Muse…`, { found: run.found, created: run.created });
       const synth = await classifyForProfile(ctx, profile);
       const errors = [...run.errors];
       if (synth.status !== "ok") errors.push({ channel: "Muse synthesis", message: synth.message });
+      await touchSearchRun(db, runId, "done", `Checked ${run.found} posts, ${run.created} looked like your people.`, { found: run.found, created: run.created, synthesized: synth.classified + synth.cached });
       ctx.invalidateQueries();
-      return { created: run.created, found: run.found, discarded: run.discarded, pruned: run.pruned, promoted: run.promoted, synthesized: synth.classified + synth.cached, synthesisStatus: synth.status, synthesisMessage: synth.message, errors, expansionRound: gen.round, expansionAnchor: gen.plan.anchorTerm, expansionQueries: queries, expansionGenerated: true, nextSuggestions: gen.plan.nextSuggestions };
+      return { runId, created: run.created, found: run.found, discarded: run.discarded, pruned: run.pruned, promoted: run.promoted, synthesized: synth.classified + synth.cached, synthesisStatus: synth.status, synthesisMessage: synth.message, errors, expansionRound: gen.round, expansionAnchor: gen.plan.anchorTerm, expansionQueries: queries, expansionGenerated: true, nextSuggestions: gen.plan.nextSuggestions };
     },
   }),
 
@@ -1021,6 +1602,62 @@ export const Actions = {
       if (!gen.ok) return { status: gen.status, message: gen.message, round: 0, anchorTerm: "", droppedUnanchored: 0 };
       ctx.invalidateQueries();
       return { status: "ok", message: `Expansion plan round ${gen.round} saved — ${gen.plan.queries.length} anchored queries (anchor: “${gen.plan.anchorTerm}”)${gen.plan.droppedUnanchored ? `, ${gen.plan.droppedUnanchored} unanchored suggestion${gen.plan.droppedUnanchored === 1 ? "" : "s"} dropped` : ""}, ${gen.plan.communities.length} communities mapped to channels. It will drive the next search.`, round: gen.round, anchorTerm: gen.plan.anchorTerm, droppedUnanchored: gen.plan.droppedUnanchored };
+    },
+  }),
+
+  // Which channels fit THIS profile: profile signals plus Muse's latest
+  // expansion plan, ranked best/good/poor with reasons. The UI preselects
+  // the open non-poor picks — GitHub and HN are never defaults for a
+  // non-technical profile.
+  recommendChannels: defineAction({
+    request: z.object({ profileId: z.number() }),
+    response: z.object({ status: z.string(), message: z.string(), basedOn: z.string(), recs: z.array(z.object({ channel: z.string(), fit: z.string(), reasons: z.array(z.string()), needsConnection: z.boolean() })) }),
+    async handler(ctx, args) {
+      const db = ctx.db<typeof schema>();
+      const profRows = await db.select().from(schema.profiles).where(eq(schema.profiles.id, args.profileId));
+      const profile = profRows[0];
+      if (!profile) return { status: "error", message: "Profile not found.", basedOn: "", recs: [] };
+      const existing = await db.select().from(schema.searchExpansions).where(eq(schema.searchExpansions.profileId, profile.id));
+      const latest = existing.sort((a, b) => b.round - a.round)[0];
+      let plan: ExpansionPlan | null = null;
+      let basedOn = "profile signals (no expansion plan yet — generate one for sharper picks)";
+      if (latest) {
+        try {
+          const p = JSON.parse(latest.plan || "{}") as ExpansionPlan;
+          if (p && Array.isArray(p.queries) && p.queries.length) {
+            plan = p;
+            basedOn = `Muse expansion round ${latest.round} + profile signals`;
+          }
+        } catch { /* heuristic-only */ }
+      }
+      const { recs } = channelRecsFor(profile, plan);
+      const tops = recs.filter((r) => r.fit === "best" && !r.needsConnection).map((r) => r.channel);
+      const poors = recs.filter((r) => r.fit === "poor" && !r.needsConnection).map((r) => r.channel);
+      return {
+        status: "ok",
+        message: tops.length
+          ? `Best channels for this profile: ${tops.join(", ")} (${basedOn}).`
+          : poors.length
+            ? `No channel stands out for this profile (${basedOn}) — ${poors.join(", ")} deselected as poor fits.`
+            : `No channel stands out for this profile (${basedOn}) — all open channels stay selected.`,
+        basedOn,
+        recs,
+      };
+    },
+  }),
+
+  // Poll a search run's phase while it is in flight (the search actions are
+  // synchronous, so this mostly confirms completion — but the phases are
+  // real and the UI narrates them).
+  searchRunStatus: defineAction({
+    request: z.object({ runId: z.number() }),
+    response: z.object({ phase: z.string(), detail: z.string(), found: z.number(), created: z.number(), synthesized: z.number() }),
+    async handler(ctx, args) {
+      const db = ctx.db<typeof schema>();
+      const rows = await db.select().from(schema.searchRuns).where(eq(schema.searchRuns.id, args.runId));
+      const r = rows[0];
+      if (!r) return { phase: "done", detail: "No such run.", found: 0, created: 0, synthesized: 0 };
+      return { phase: r.phase, detail: r.detail, found: r.found, created: r.created, synthesized: r.synthesized };
     },
   }),
 
@@ -1111,7 +1748,8 @@ export const Actions = {
       const db = ctx.db<typeof schema>();
       const rows = await db.select().from(schema.leads).where(eq(schema.leads.id, args.leadId));
       const lead = rows[0];
-      await db.update(schema.leads).set({ draftBody: args.draftBody, status: lead && lead.status === "new" ? "drafted" : (lead?.status ?? "drafted"), updatedAt: new Date() }).where(eq(schema.leads.id, args.leadId));
+      if (!lead) return { ok: false };
+      await db.update(schema.leads).set({ draftBody: args.draftBody, status: lead.status === "new" ? "drafted" : lead.status, updatedAt: new Date() }).where(eq(schema.leads.id, args.leadId));
       ctx.invalidateQueries();
       return { ok: true };
     },
@@ -1133,8 +1771,41 @@ export const Actions = {
         if (lead && (lead.llmCategory === "irrelevant" || (lead.llmConfidence > 0 && lead.llmConfidence < LOW_CONFIDENCE)) && lead.llmReviewed !== 1) return { ok: false };
       }
       await db.update(schema.leads).set({ status: args.status, updatedAt: new Date() }).where(eq(schema.leads.id, args.leadId));
+      if (args.status === "sent") {
+        const moved = await db.select().from(schema.leads).where(eq(schema.leads.id, args.leadId));
+        if (moved[0]) await ensureFollowup(db, moved[0].id, moved[0].profileId);
+      }
       ctx.invalidateQueries();
       return { ok: true };
+    },
+  }),
+
+  // Answer a reply nudge: they replied (lead moves, nudge closes), snooze
+  // (ask again in 3 days), or stop (never ask about this lead again).
+  answerNudge: defineAction({
+    request: z.object({ followupId: z.number(), outcome: z.enum(["replied", "snoozed", "stopped"]) }),
+    response: z.object({ ok: z.boolean(), message: z.string() }),
+    async handler(ctx, args) {
+      const db = ctx.db<typeof schema>();
+      const rows = await db.select().from(schema.followups).where(eq(schema.followups.id, args.followupId));
+      const f = rows[0];
+      if (!f) return { ok: false, message: "That reminder is gone — the lead may have been deleted." };
+      const leads = await db.select().from(schema.leads).where(eq(schema.leads.id, f.leadId));
+      const lead = leads[0];
+      if (args.outcome === "replied" && lead) {
+        await db.update(schema.leads).set({ status: "replied", updatedAt: new Date() }).where(eq(schema.leads.id, lead.id));
+        await db.delete(schema.followups).where(eq(schema.followups.leadId, lead.id));
+        ctx.invalidateQueries();
+        return { ok: true, message: "Moved to replied — nice." };
+      }
+      if (args.outcome === "snoozed" && lead) {
+        await db.update(schema.followups).set({ dueAt: new Date(Date.now() + FOLLOWUP_DUE_MS) }).where(eq(schema.followups.id, f.id));
+        ctx.invalidateQueries();
+        return { ok: true, message: "Snoozed — I'll ask again in 3 days." };
+      }
+      await db.update(schema.followups).set({ stopped: 1, doneAt: new Date() }).where(eq(schema.followups.id, f.id));
+      ctx.invalidateQueries();
+      return { ok: true, message: "Reminder cleared." };
     },
   }),
 
@@ -1143,6 +1814,7 @@ export const Actions = {
     response: z.object({ ok: z.boolean() }),
     async handler(ctx, args) {
       const db = ctx.db<typeof schema>();
+      await db.delete(schema.followups).where(eq(schema.followups.leadId, args.leadId));
       await db.delete(schema.leads).where(eq(schema.leads.id, args.leadId));
       ctx.invalidateQueries();
       return { ok: true };
@@ -1184,6 +1856,7 @@ export const Actions = {
         const uri = String(asObj(r.data).uri ?? ""); const rkey = uri.split("/").pop() ?? "";
         const url = `https://bsky.app/profile/${sess.handle}/post/${rkey}`;
         await db.update(schema.leads).set({ status: "sent", postedUrl: url, updatedAt: new Date() }).where(eq(schema.leads.id, lead.id));
+        await ensureFollowup(db, lead.id, lead.profileId);
         ctx.invalidateQueries();
         return { posted: true, postedUrl: url, message: "Posted to Bluesky from your account. Now watch for a reply and move it along the tracker when they respond." };
       }
@@ -1201,6 +1874,7 @@ export const Actions = {
         if (!r.ok) return { posted: false, postedUrl: "", message: `GitHub comment failed (HTTP ${r.status}). The draft stays Approved — check your token's Issues permission.` };
         const url = String(asObj(r.data).html_url ?? lead.externalUrl);
         await db.update(schema.leads).set({ status: "sent", postedUrl: url, updatedAt: new Date() }).where(eq(schema.leads.id, lead.id));
+        await ensureFollowup(db, lead.id, lead.profileId);
         ctx.invalidateQueries();
         return { posted: true, postedUrl: url, message: "Comment posted on the GitHub issue from your account." };
       }
@@ -1226,6 +1900,7 @@ export const Actions = {
         const permalink = String(asObj(asObj(things[0]).data).permalink ?? "");
         const url = permalink ? `https://www.reddit.com${permalink}` : lead.externalUrl;
         await db.update(schema.leads).set({ status: "sent", postedUrl: url, updatedAt: new Date() }).where(eq(schema.leads.id, lead.id));
+        await ensureFollowup(db, lead.id, lead.profileId);
         ctx.invalidateQueries();
         return { posted: true, postedUrl: url, message: "Reply posted via the Reddit POC connector from your own account (free non-commercial tier — POC validation only)." };
       }
@@ -1465,13 +2140,17 @@ export const Actions = {
   }),
 
   // ─── LLM settings (founder's Muse API key + Muse model names) ───────────
+  // AI setup is key-only: the founder pastes their Muse API key (and
+  // optionally voice notes). Model choice is automatic — small/fast tier for
+  // high-volume first passes, large tier for drafts and summaries — so there
+  // is nothing to pick and nothing to misconfigure.
   saveLlmSettings: defineAction({
-    request: z.object({ provider: z.string().min(1), apiKey: z.string().default(""), baseUrl: z.string().default(""), smallModel: z.string().default(""), largeModel: z.string().default(""), founderVoice: z.string().default("") }),
+    request: z.object({ apiKey: z.string().default(""), founderVoice: z.string().default("") }),
     response: z.object({ ok: z.boolean() }),
     async handler(ctx, args) {
       const db = ctx.db<typeof schema>();
       const existing = await db.select().from(schema.llmSettings);
-      const vals = { provider: "muse", apiKey: args.apiKey.trim() || (existing[0]?.apiKey ?? ""), baseUrl: "", smallModel: args.smallModel.trim(), largeModel: args.largeModel.trim(), founderVoice: args.founderVoice, updatedAt: Date.now() };
+      const vals = { provider: "muse", apiKey: args.apiKey.trim() || (existing[0]?.apiKey ?? ""), baseUrl: "", smallModel: "auto", largeModel: "auto", founderVoice: args.founderVoice, updatedAt: Date.now() };
       if (existing[0]) await db.update(schema.llmSettings).set(vals).where(eq(schema.llmSettings.id, existing[0].id));
       else await db.insert(schema.llmSettings).values(vals);
       ctx.invalidateQueries();
@@ -1496,7 +2175,7 @@ export const Actions = {
     async handler(ctx) {
       const r = await runLlm(ctx, "small", "Connection test: reply with a short confirmation that you received this.", z.string());
       if (!r.ok) return { ok: false, status: r.status, message: r.message };
-      return { ok: true, status: "ok", message: "Your small/fast Muse model answered — the Muse connection works. Drafts and feedback summaries will use your large Muse model." };
+      return { ok: true, status: "ok", message: "Your Muse API key works — models are picked automatically (fast tier for first passes, large tier for drafts and summaries)." };
     },
   }),
 
@@ -1516,7 +2195,7 @@ export const Actions = {
       if (!r.ok) return { status: r.status, message: r.message, ...empty };
       const arr = (v: string[]) => v.filter((x) => !!x.trim()).map((x) => x.trim()).slice(0, 14);
       const painPhrases = arr(r.value.painPhrases); const workaroundPhrases = arr(r.value.workaroundPhrases); const exclusions = arr(r.value.exclusions);
-      if (!painPhrases.length) return { status: "error", message: "The model didn't return usable phrases — nothing was saved. Try again, or check the model name in LLM settings.", ...empty };
+      if (!painPhrases.length) return { status: "error", message: "The model didn't return usable phrases — nothing was saved. Try again, or check the AI settings.", ...empty };
       await db.update(schema.profiles).set({ painPhrases: JSON.stringify(painPhrases), workaroundPhrases: JSON.stringify(workaroundPhrases), exclusions: JSON.stringify(exclusions) }).where(eq(schema.profiles.id, p.id));
       ctx.invalidateQueries();
       return { status: "ok", message: `Expanded into ${painPhrases.length} pain phrases, ${workaroundPhrases.length} workaround phrases and ${exclusions.length} exclusions. Review them below — they're suggestions in people's words, and you can fold the best into your keywords.`, painPhrases, workaroundPhrases, exclusions };
@@ -1643,7 +2322,7 @@ export const Actions = {
       if (signals.inConversation < 3 || signals.started < 3) { lever = "audience"; rationale = `Only ${signals.inConversation} conversation(s) and ${signals.started} starter(s) so far — there isn't yet a cohort big enough to judge the message or the problem. The earliest weak signal is reach: the people, not the pitch.`; }
       else if (signals.core < Math.max(1, Math.floor(signals.started / 2))) { lever = "message"; rationale = `${signals.started} started but only ${signals.core} did the core action (${p.coreAction || "the core action"}). People arrive and don't land — that points at the message and the first-run expectation before it points at the problem.`; }
       else { lever = "problem"; rationale = `${signals.started} started and ${signals.core} did the core action, but only ${signals.returned} came back, ${signals.paid} paid, ${signals.referred} referred. They tried it and it didn't stick — with audience and message producing trials, the problem framing itself is the next thing to test.`; }
-      const fb = await db.select().from(schema.llmSummaries).where(and(eq(schema.llmSummaries.profileId, args.profileId), eq(schema.llmSummaries.kind, "feedback")));
+      const fb = await db.select().from(schema.llmSummaries).where(and(eq(schema.llmSummaries.profileId, args.profileId), eq(schema.llmSummaries.kind, "feedback"))).orderBy(desc(schema.llmSummaries.id));
       const latestFb = fb[0]?.content ?? "";
       // Next-experiment suggestions are a core Muse step — no rule-based
       // suggestion is saved or shown when Muse is missing or fails. The
