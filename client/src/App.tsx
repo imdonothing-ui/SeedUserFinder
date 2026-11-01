@@ -190,7 +190,7 @@ export function App() {
           <div className="mt-3 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-3 text-sm">
             <p><span className="font-semibold">{activeProfile.productName}</span> <span className="text-[var(--dim)]">— {activeProfile.productDesc || "no description"}</span></p>
             <p className="mt-1"><span className="font-semibold">Whose pain:</span> {activeProfile.audience || "—"}{activeProfile.pain ? ` — ${activeProfile.pain}` : ""}</p>
-            {parseJsonArr(activeProfile.painPhrases).length > 0 && <p className="mt-1"><span className="font-semibold">AI pain phrases:</span> {parseJsonArr(activeProfile.painPhrases).slice(0, 4).join(" · ")}{parseJsonArr(activeProfile.painPhrases).length > 4 ? " …" : ""} <span className="text-[var(--dim)]">(full list in Settings → AI)</span></p>}
+            {parseJsonArr(activeProfile.painPhrases).length > 0 && <p className="mt-1"><span className="font-semibold">AI pain phrases:</span> {parseJsonArr(activeProfile.painPhrases).slice(0, 4).join(" · ")}{parseJsonArr(activeProfile.painPhrases).length > 4 ? " …" : ""} <span className="text-[var(--dim)]">(full list on the Profile tab)</span></p>}
           </div>
         )}
 
@@ -226,15 +226,15 @@ export function App() {
 
         {activeProfile && !llm?.configured && tab !== "settings" && tab !== "profile" && <LlmSetupGate onGoSettings={() => setTab("settings")} />}
 
-        {tab === "profile" && <ProfileTab profiles={profiles} activeProfile={activeProfile} onSelect={(id) => setProfileId(id)} onDone={(id) => { if (id) { setProfileId(id); setTab("search"); } invalidate(); }} />}
+        {tab === "profile" && <ProfileTab profiles={profiles} activeProfile={activeProfile} onSelect={(id) => setProfileId(id)} onDone={(id) => { if (id) { setProfileId(id); setTab("search"); } invalidate(); }} llm={llm} insights={insights} flash={flash} invalidate={invalidate} />}
         {llm?.configured && activeProfile && tab === "search" && <SearchTab profile={activeProfile} expansions={(data?.expansions ?? []).filter((x) => x.profileId === activeProfile.id)} llmConfigured={!!llm?.configured} connections={data?.connections ?? []} channels={channels} setChannels={(c) => { channelsTouched.current = true; setChannels(c); }} subs={subs} setSubs={setSubs} recReasons={recReasons} recFit={recFit} openRecs={openRecs} recVenues={recVenues} recsReady={!!recQ.data} recMessage={recMessage} runId={runId} setRunId={setRunId} setLastSearch={setLastSearch} result={searchResult} setResult={setSearchResult} onGoSettings={() => setTab("settings")} onDone={() => setTab("results")} flash={flash} invalidate={invalidate} />}
         {llm?.configured && activeProfile && tab === "results" && <ResultsTab profile={activeProfile} leads={leads} expansions={(data?.expansions ?? []).filter((x) => x.profileId === activeProfile.id)} llmConfigured={!!llm?.configured} channels={channels} subs={subs} sortByScore={sortByScore} setSortByScore={setSortByScore} lastSearch={lastSearch} setLastSearch={setLastSearch} setRunId={setRunId} flash={flash} invalidate={invalidate} />}
         {llm?.configured && activeProfile && tab === "tracker" && <TrackerTab leads={leads} profile={activeProfile} followups={(data?.followups ?? []).filter((f) => f.profileId === activeProfile.id)} flash={flash} invalidate={invalidate} />}
-        {llm?.configured && activeProfile && tab === "cohort" && <CohortTab profile={activeProfile} leads={leads} invites={invites} events={events} summaries={summaries} llmConfigured={!!llm?.configured} posthog={data?.posthog.find((p) => p.profileId === activeProfile.id)} flash={flash} invalidate={invalidate} />}
+        {llm?.configured && activeProfile && tab === "cohort" && <CohortTab profile={activeProfile} leads={leads} invites={invites} events={events} feedback={feedback} summaries={summaries} llmConfigured={!!llm?.configured} posthog={data?.posthog.find((p) => p.profileId === activeProfile.id)} flash={flash} invalidate={invalidate} />}
         {tab === "settings" && (
           <div className="mt-5 space-y-6">
-            <AiTab profile={activeProfile} llm={llm} feedback={feedback} summaries={summaries} flash={flash} invalidate={invalidate} goCreateProfile={() => setTab("profile")} />
-            <ChannelsTab connections={data?.connections ?? []} profile={activeProfile} insights={insights} llmConfigured={!!llm?.configured} flash={flash} invalidate={invalidate} />
+            <AiTab llm={llm} flash={flash} invalidate={invalidate} />
+            <ChannelsTab connections={data?.connections ?? []} flash={flash} invalidate={invalidate} />
           </div>
         )}
       </main>
@@ -274,8 +274,86 @@ function ProfileForm({ existing, onDone, onClose }: { existing?: Profile; onDone
   );
 }
 
-function ProfileTab({ profiles, activeProfile, onSelect, onDone }: { profiles: Profile[]; activeProfile?: Profile; onSelect: (id: number) => void; onDone: (id?: number) => void }) {
+/* Pain language lives with the profile it describes: your plain description
+   becomes the phrases real people type, and competitor reviews add more. */
+function PainLanguagePanel({ profile, configured, flash, invalidate }: { profile: Profile; configured: boolean; flash: (m: string) => void; invalidate: () => void }) {
+  const [expandMsg, setExpandMsg] = useState("");
+  const expand = useMutation({ mutationFn: () => api.expandPainLanguage({ profileId: profile.id }), onSuccess: (r) => { invalidate(); setExpandMsg(r.message); } });
+  const applyKw = useMutation({ mutationFn: () => api.applyExpansionToKeywords({ profileId: profile.id }), onSuccess: () => { invalidate(); flash("Top pain phrases folded into your profile keywords — they'll shape the next search."); } });
+  const painPhrases = parseJsonArr(profile.painPhrases);
+  const workPhrases = parseJsonArr(profile.workaroundPhrases);
+  const exclusions = parseJsonArr(profile.exclusions);
+  return (
+    <div className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-4">
+      <h3 className="font-serif text-base font-bold">Pain language — from your description to their words</h3>
+      <p className="mt-1 text-sm text-[var(--dim)]">Your plain description (“{profile.pain.slice(0, 90)}{profile.pain.length > 90 ? "…" : ""}”) becomes the phrases real people type when they hit this pain, the workaround language that proves they're already hacking a solution, and exclusions that keep adjacent noise out of search.</p>
+      {configured
+        ? <button type="button" className={btnPrimary + " mt-2"} disabled={expand.isPending} onClick={() => expand.mutate()}>{expand.isPending ? "Expanding…" : painPhrases.length ? "Re-expand pain language" : "Expand pain language"}</button>
+        : <p className="mt-2 rounded-[var(--radius)] bg-[var(--amber-bg)] p-2 text-sm text-[var(--amber)]"><strong>Setup required.</strong> Pain expansion is a core Muse step and is blocked until you enter your Muse API key in Settings — in the app only, never in chat.</p>}
+      {expandMsg && <p role="status" className="mt-2 text-sm">{expandMsg}</p>}
+      {painPhrases.length > 0 && (
+        <div className="mt-3 space-y-2 text-sm">
+          <div><p className="font-semibold">Phrases people use</p><div className="mt-1 flex flex-wrap gap-1.5">{painPhrases.map((p) => <span key={p} className="rounded-full bg-[var(--surface-alt)] px-2.5 py-1 text-xs font-medium">“{p}”</span>)}</div></div>
+          {workPhrases.length > 0 && <div><p className="font-semibold">Workaround language</p><div className="mt-1 flex flex-wrap gap-1.5">{workPhrases.map((p) => <span key={p} className="rounded-full bg-[var(--surface-alt)] px-2.5 py-1 text-xs font-medium">“{p}”</span>)}</div></div>}
+          {exclusions.length > 0 && <div><p className="font-semibold">Exclusions — signals it's not this pain</p><div className="mt-1 flex flex-wrap gap-1.5">{exclusions.map((p) => <span key={p} className="rounded-full bg-[var(--amber-bg)] px-2.5 py-1 text-xs font-medium text-[var(--amber)]">{p}</span>)}</div></div>}
+          <button type="button" className={btnGhost} disabled={applyKw.isPending} onClick={() => applyKw.mutate()}>Fold top phrases into my keywords</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* Seed-user voices live with the cohort they explain: what they said,
+   summarised with exact quotes, next to the signals it should move. */
+function FeedbackPanel({ profile, configured, feedback, summaries, flash, invalidate }: { profile: Profile; configured: boolean; feedback: FeedbackEntry[]; summaries: Summary[]; flash: (m: string) => void; invalidate: () => void }) {
+  const [fb, setFb] = useState({ seedName: "", source: "", rawText: "" });
+  const addFb = useMutation({ mutationFn: () => api.addFeedback({ profileId: profile.id, ...fb }), onSuccess: () => { invalidate(); setFb({ seedName: "", source: "", rawText: "" }); flash("Feedback saved word-for-word — summaries quote from exactly this text."); } });
+  const delFb = useMutation({ mutationFn: (id: number) => api.deleteFeedback({ id }), onSuccess: () => invalidate() });
+  const [sumMsg, setSumMsg] = useState("");
+  const summarise = useMutation({ mutationFn: () => api.summariseFeedback({ profileId: profile.id }), onSuccess: (r) => { invalidate(); setSumMsg(r.message); } });
+  const delSum = useMutation({ mutationFn: (id: number) => api.deleteSummary({ id }), onSuccess: () => invalidate() });
+  const fbSummaries = summaries.filter((s) => s.kind === "feedback");
+  const setFbField = (k: keyof typeof fb) => (e: { target: { value: string } }) => setFb((v) => ({ ...v, [k]: e.target.value }));
+  return (
+    <div className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-4">
+      <h3 className="font-serif text-base font-bold">Feedback — summarised, never invented</h3>
+      <p className="mt-1 text-sm text-[var(--dim)]">Paste what seed users actually said — call notes, messages, replies — word for word. The summary clusters it, shows where they got stuck and what they asked for, and quotes them exactly: any quote the model can't source from your text is dropped before you see it. It also drafts follow-up questions aimed at friction, not praise.</p>
+      <form className="mt-3 space-y-2" onSubmit={(e: FormEvent) => { e.preventDefault(); addFb.mutate(); }}>
+        <div className="grid grid-cols-2 gap-2">
+          <div><label htmlFor="fb-name" className={labelCls}>Seed user</label><input id="fb-name" aria-label="Seed user name" value={fb.seedName} onChange={setFbField("seedName")} className={inputCls} placeholder="Name or handle" /></div>
+          <div><label htmlFor="fb-src" className={labelCls}>Where it came from</label><input id="fb-src" aria-label="Feedback source" value={fb.source} onChange={setFbField("source")} className={inputCls} placeholder="Call notes · DM · email…" /></div>
+        </div>
+        <div><label htmlFor="fb-text" className={labelCls}>What they actually said</label><textarea id="fb-text" aria-label="Feedback in their words" required rows={3} value={fb.rawText} onChange={setFbField("rawText")} className={inputCls} placeholder="Paste it verbatim — don't tidy it up. The summary can only quote what's here." /></div>
+        <button type="submit" className={btnGhost} disabled={addFb.isPending}>Save feedback</button>
+      </form>
+      <div className="mt-3 space-y-2">
+        {feedback.map((e) => (
+          <div key={e.id} className="rounded-[var(--radius)] border border-[var(--border)] p-3 text-sm">
+            <p className="font-semibold">{e.seedName || "Seed user"} {e.source && <span className="font-normal text-[var(--dim)]">· {e.source}</span>} <button type="button" className={btnSmall + " float-right"} aria-label={`Delete feedback ${e.id}`} onClick={() => delFb.mutate(e.id)}>Delete</button></p>
+            <p className="mt-1 whitespace-pre-wrap text-[var(--dim)]">“{e.rawText.slice(0, 300)}{e.rawText.length > 300 ? "…" : ""}”</p>
+          </div>
+        ))}
+        {!feedback.length && <p className="text-sm text-[var(--dim)]">No feedback recorded yet for this profile.</p>}
+      </div>
+      <div className="mt-3 border-t border-[var(--border)] pt-3">
+        {configured
+          ? <button type="button" className={btnPrimary} disabled={!feedback.length || summarise.isPending} onClick={() => summarise.mutate()}>{summarise.isPending ? "Summarising…" : "Summarise feedback with my large Muse model"}</button>
+          : <p className="rounded-[var(--radius)] bg-[var(--amber-bg)] p-2 text-sm text-[var(--amber)]"><strong>Setup required.</strong> Feedback summaries are a core Muse step and are blocked until Muse is configured in Settings. You can still record feedback word-for-word above — it just can't be summarised until setup is complete, and no summary will be invented without your Muse model.</p>}
+        {sumMsg && <p role="status" className="mt-2 text-sm">{sumMsg}</p>}
+        {fbSummaries.map((s) => (
+          <div key={s.id}>
+            <FeedbackSummaryView summary={s} />
+            <button type="button" className={btnSmall + " mt-1"} aria-label="Delete this feedback summary" onClick={() => delSum.mutate(s.id)}>Delete summary</button>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ProfileTab({ profiles, activeProfile, onSelect, onDone, llm, insights, flash, invalidate }: { profiles: Profile[]; activeProfile?: Profile; onSelect: (id: number) => void; onDone: (id?: number) => void; llm?: State["llm"]; insights: State["insights"]; flash: (m: string) => void; invalidate: () => void }) {
   const [isNew, setIsNew] = useState(false);
+  const showPanels = !!activeProfile && !isNew;
   return (
     <section className="mt-5 space-y-4" aria-label="Target profile">
       {profiles.length > 1 && (
@@ -293,6 +371,12 @@ function ProfileTab({ profiles, activeProfile, onSelect, onDone }: { profiles: P
         onDone={(id) => { setIsNew(false); onDone(id); }}
         onClose={() => setIsNew(false)}
       />
+      {showPanels && activeProfile && (
+        <>
+          <PainLanguagePanel profile={activeProfile} configured={!!llm?.configured} flash={flash} invalidate={invalidate} />
+          <InsightForm profile={activeProfile} insights={insights} llmConfigured={!!llm?.configured} flash={flash} invalidate={invalidate} />
+        </>
+      )}
     </section>
   );
 }
@@ -667,7 +751,7 @@ function LeadCard({ lead, llmConfigured, invalidate }: { lead: Lead; llmConfigur
 
       {needsClassification && (
         <div className="mt-3 rounded-[var(--radius)] bg-[var(--amber-bg)] p-3 text-sm text-[var(--amber)]">
-          <strong>Not classified by Muse yet.</strong> {llmConfigured ? "This lead passed only the rule-based pre-filter. Run “Classify waiting leads with Muse” above — until Muse classifies it, no draft can be generated and it can't be approved or contacted." : "Muse isn't configured yet, so this lead can't be classified — and unclassified leads can't be drafted for, approved, or contacted. Set up Muse in the AI tab first."}
+          <strong>Not classified by Muse yet.</strong> {llmConfigured ? "This lead passed only the rule-based pre-filter. Run “Classify waiting leads with Muse” above — until Muse classifies it, no draft can be generated and it can't be approved or contacted." : "Muse isn't configured yet, so this lead can't be classified — and unclassified leads can't be drafted for, approved, or contacted. Set up Muse in Settings first."}
         </div>
       )}
 
@@ -801,7 +885,7 @@ function TrackerTab({ leads, profile, followups, flash, invalidate }: { leads: L
   );
 }
 
-function CohortTab({ profile, leads, invites, events, summaries, llmConfigured, posthog, flash, invalidate }: { profile: Profile; leads: Lead[]; invites: State["invites"]; events: State["events"]; summaries: Summary[]; llmConfigured: boolean; posthog?: State["posthog"][number]; flash: (m: string) => void; invalidate: () => void }) {
+function CohortTab({ profile, leads, invites, events, feedback, summaries, llmConfigured, posthog, flash, invalidate }: { profile: Profile; leads: Lead[]; invites: State["invites"]; events: State["events"]; feedback: FeedbackEntry[]; summaries: Summary[]; llmConfigured: boolean; posthog?: State["posthog"][number]; flash: (m: string) => void; invalidate: () => void }) {
   const [seedName, setSeedName] = useState("");
   const [simCode, setSimCode] = useState("");
   const [simType, setSimType] = useState<string>("started");
@@ -829,6 +913,8 @@ function CohortTab({ profile, leads, invites, events, summaries, llmConfigured, 
         </div>
         <p className="mt-1 text-xs text-[var(--dim)]">Counts are distinct seed users (of {invites.length} tagged) who hit each signal{profile.coreAction ? ` — core action = ${profile.coreAction}` : ""}.</p>
       </div>
+
+      <FeedbackPanel profile={profile} configured={llmConfigured} feedback={feedback} summaries={summaries} flash={flash} invalidate={invalidate} />
 
       <NextExperimentPanel profile={profile} summaries={summaries} llmConfigured={llmConfigured} flash={flash} invalidate={invalidate} />
 
@@ -896,7 +982,7 @@ function NextExperimentPanel({ profile, summaries, llmConfigured, flash, invalid
       <p className="mt-1 text-sm text-[var(--dim)]">From your cohort signals, your Muse model suggests the next experiment in a fixed order — change the <strong>audience</strong> first, then the <strong>message</strong>, then the <strong>problem</strong>. This is a core Muse step: there is no rule-based suggestion standing in for it. It will never give you a PMF score or verdict: whether these signals count as PMF is your call.</p>
       {llmConfigured
         ? <button type="button" className={btnPrimary + " mt-2"} disabled={suggest.isPending} onClick={() => suggest.mutate()}>{suggest.isPending ? "Thinking…" : "Suggest next experiment with Muse"}</button>
-        : <p className="mt-2 rounded-[var(--radius)] bg-[var(--amber-bg)] p-2 text-sm text-[var(--amber)]"><strong>Setup required.</strong> Next-experiment suggestions need Muse configured — enter your Muse API key in the AI tab, in the app only. Until then this step is blocked, not replaced by a rule-based guess.</p>}
+        : <p className="mt-2 rounded-[var(--radius)] bg-[var(--amber-bg)] p-2 text-sm text-[var(--amber)]"><strong>Setup required.</strong> Next-experiment suggestions need Muse configured — enter your Muse API key in Settings, in the app only. Until then this step is blocked, not replaced by a rule-based guess.</p>}
       {latest && (
         <div className="mt-3 rounded-[var(--radius)] border border-[var(--border)] p-3">
           <div className="flex flex-wrap items-center gap-2">
@@ -943,7 +1029,7 @@ function FeedbackSummaryView({ summary }: { summary: Summary }) {
   );
 }
 
-function AiTab({ profile, llm, feedback, summaries, flash, invalidate, goCreateProfile }: { profile?: Profile; llm?: State["llm"]; feedback: FeedbackEntry[]; summaries: Summary[]; flash: (m: string) => void; invalidate: () => void; goCreateProfile: () => void }) {
+function AiTab({ llm, flash, invalidate }: { llm?: State["llm"]; flash: (m: string) => void; invalidate: () => void }) {
   const configured = !!llm?.configured;
   const [f, setF] = useState({ apiKey: "", founderVoice: llm?.founderVoice ?? "" });
   const [testMsg, setTestMsg] = useState("");
@@ -951,24 +1037,6 @@ function AiTab({ profile, llm, feedback, summaries, flash, invalidate, goCreateP
   const clear = useMutation({ mutationFn: () => api.clearLlmSettings({}), onSuccess: () => { invalidate(); flash("Muse settings removed. Muse is required, so the core flow is now blocked until you configure Muse again in the AI settings."); } });
   const test = useMutation({ mutationFn: () => api.testLlmConnection({}), onSuccess: (r) => setTestMsg(r.message), onError: () => setTestMsg("Connection test failed — check your settings.") });
   const set = (k: keyof typeof f) => (e: { target: { value: string } }) => setF((v) => ({ ...v, [k]: e.target.value }));
-
-  // Pain expansion
-  const [expandMsg, setExpandMsg] = useState("");
-  const expand = useMutation({ mutationFn: () => api.expandPainLanguage({ profileId: profile?.id ?? 0 }), onSuccess: (r) => { invalidate(); setExpandMsg(r.message); } });
-  const applyKw = useMutation({ mutationFn: () => api.applyExpansionToKeywords({ profileId: profile?.id ?? 0 }), onSuccess: () => { invalidate(); flash("Top pain phrases folded into your profile keywords — they'll shape the next search."); } });
-  const painPhrases = profile ? parseJsonArr(profile.painPhrases) : [];
-  const workPhrases = profile ? parseJsonArr(profile.workaroundPhrases) : [];
-  const exclusions = profile ? parseJsonArr(profile.exclusions) : [];
-
-  // Feedback
-  const [fb, setFb] = useState({ seedName: "", source: "", rawText: "" });
-  const addFb = useMutation({ mutationFn: () => api.addFeedback({ profileId: profile?.id ?? 0, ...fb }), onSuccess: () => { invalidate(); setFb({ seedName: "", source: "", rawText: "" }); flash("Feedback saved word-for-word — summaries quote from exactly this text."); } });
-  const delFb = useMutation({ mutationFn: (id: number) => api.deleteFeedback({ id }), onSuccess: () => invalidate() });
-  const [sumMsg, setSumMsg] = useState("");
-  const summarise = useMutation({ mutationFn: () => api.summariseFeedback({ profileId: profile?.id ?? 0 }), onSuccess: (r) => { invalidate(); setSumMsg(r.message); } });
-  const delSum = useMutation({ mutationFn: (id: number) => api.deleteSummary({ id }), onSuccess: () => invalidate() });
-  const fbSummaries = summaries.filter((s) => s.kind === "feedback");
-  const setFbField = (k: keyof typeof fb) => (e: { target: { value: string } }) => setFb((v) => ({ ...v, [k]: e.target.value }));
 
   return (
     <section className="mt-5 space-y-4">
@@ -996,66 +1064,7 @@ function AiTab({ profile, llm, feedback, summaries, flash, invalidate, goCreateP
         {testMsg && <p role="status" className="text-sm">{testMsg}</p>}
       </form>
 
-      {!profile && <p className="rounded-[var(--radius)] border border-dashed border-[var(--border)] p-4 text-sm text-[var(--dim)]">Create a target profile to use pain expansion and feedback summaries. <button type="button" className="font-semibold text-[var(--accent)] underline" onClick={goCreateProfile}>Create one</button></p>}
-
-      {profile && (
-        <>
-          {/* Pain expansion */}
-          <div className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-4">
-            <h3 className="font-serif text-base font-bold">Pain language — from your description to their words</h3>
-            <p className="mt-1 text-sm text-[var(--dim)]">Your plain description (“{profile.pain.slice(0, 90)}{profile.pain.length > 90 ? "…" : ""}”) becomes the phrases real people type when they hit this pain, the workaround language that proves they're already hacking a solution, and exclusions that keep adjacent noise out of search.</p>
-            {configured
-              ? <button type="button" className={btnPrimary + " mt-2"} disabled={expand.isPending} onClick={() => expand.mutate()}>{expand.isPending ? "Expanding…" : painPhrases.length ? "Re-expand pain language" : "Expand pain language"}</button>
-              : <p className="mt-2 rounded-[var(--radius)] bg-[var(--amber-bg)] p-2 text-sm text-[var(--amber)]"><strong>Setup required.</strong> Pain expansion is a core Muse step and is blocked until you enter your Muse API key in the settings above — in the app only, never in chat.</p>}
-            {expandMsg && <p role="status" className="mt-2 text-sm">{expandMsg}</p>}
-            {painPhrases.length > 0 && (
-              <div className="mt-3 space-y-2 text-sm">
-                <div><p className="font-semibold">Phrases people use</p><div className="mt-1 flex flex-wrap gap-1.5">{painPhrases.map((p) => <span key={p} className="rounded-full bg-[var(--surface-alt)] px-2.5 py-1 text-xs font-medium">“{p}”</span>)}</div></div>
-                {workPhrases.length > 0 && <div><p className="font-semibold">Workaround language</p><div className="mt-1 flex flex-wrap gap-1.5">{workPhrases.map((p) => <span key={p} className="rounded-full bg-[var(--surface-alt)] px-2.5 py-1 text-xs font-medium">“{p}”</span>)}</div></div>}
-                {exclusions.length > 0 && <div><p className="font-semibold">Exclusions — signals it's not this pain</p><div className="mt-1 flex flex-wrap gap-1.5">{exclusions.map((p) => <span key={p} className="rounded-full bg-[var(--amber-bg)] px-2.5 py-1 text-xs font-medium text-[var(--amber)]">{p}</span>)}</div></div>}
-                <button type="button" className={btnGhost} disabled={applyKw.isPending} onClick={() => applyKw.mutate()}>Fold top phrases into my keywords</button>
-              </div>
-            )}
-          </div>
-
-          {/* Feedback */}
-          <div className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-4">
-            <h3 className="font-serif text-base font-bold">Feedback — summarised, never invented</h3>
-            <p className="mt-1 text-sm text-[var(--dim)]">Paste what seed users actually said — call notes, messages, replies — word for word. The summary clusters it, shows where they got stuck and what they asked for, and quotes them exactly: any quote the model can't source from your text is dropped before you see it. It also drafts follow-up questions aimed at friction, not praise.</p>
-            <form className="mt-3 space-y-2" onSubmit={(e: FormEvent) => { e.preventDefault(); addFb.mutate(); }}>
-              <div className="grid grid-cols-2 gap-2">
-                <div><label htmlFor="fb-name" className={labelCls}>Seed user</label><input id="fb-name" aria-label="Seed user name" value={fb.seedName} onChange={setFbField("seedName")} className={inputCls} placeholder="Name or handle" /></div>
-                <div><label htmlFor="fb-src" className={labelCls}>Where it came from</label><input id="fb-src" aria-label="Feedback source" value={fb.source} onChange={setFbField("source")} className={inputCls} placeholder="Call notes · DM · email…" /></div>
-              </div>
-              <div><label htmlFor="fb-text" className={labelCls}>What they actually said</label><textarea id="fb-text" aria-label="Feedback in their words" required rows={3} value={fb.rawText} onChange={setFbField("rawText")} className={inputCls} placeholder="Paste it verbatim — don't tidy it up. The summary can only quote what's here." /></div>
-              <button type="submit" className={btnGhost} disabled={addFb.isPending}>Save feedback</button>
-            </form>
-            <div className="mt-3 space-y-2">
-              {feedback.map((e) => (
-                <div key={e.id} className="rounded-[var(--radius)] border border-[var(--border)] p-3 text-sm">
-                  <p className="font-semibold">{e.seedName || "Seed user"} {e.source && <span className="font-normal text-[var(--dim)]">· {e.source}</span>} <button type="button" className={btnSmall + " float-right"} aria-label={`Delete feedback ${e.id}`} onClick={() => delFb.mutate(e.id)}>Delete</button></p>
-                  <p className="mt-1 whitespace-pre-wrap text-[var(--dim)]">“{e.rawText.slice(0, 300)}{e.rawText.length > 300 ? "…" : ""}”</p>
-                </div>
-              ))}
-              {!feedback.length && <p className="text-sm text-[var(--dim)]">No feedback recorded yet for this profile.</p>}
-            </div>
-            <div className="mt-3 border-t border-[var(--border)] pt-3">
-              {configured
-                ? <button type="button" className={btnPrimary} disabled={!feedback.length || summarise.isPending} onClick={() => summarise.mutate()}>{summarise.isPending ? "Summarising…" : "Summarise feedback with my large Muse model"}</button>
-                : <p className="rounded-[var(--radius)] bg-[var(--amber-bg)] p-2 text-sm text-[var(--amber)]"><strong>Setup required.</strong> Feedback summaries are a core Muse step and are blocked until Muse is configured in the settings above. You can still record feedback word-for-word above — it just can't be summarised until setup is complete, and no summary will be invented without your Muse model.</p>}
-              {sumMsg && <p role="status" className="mt-2 text-sm">{sumMsg}</p>}
-              {fbSummaries.map((s) => (
-                <div key={s.id}>
-                  <FeedbackSummaryView summary={s} />
-                  <button type="button" className={btnSmall + " mt-1"} aria-label="Delete this feedback summary" onClick={() => delSum.mutate(s.id)}>Delete summary</button>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          <p className="text-sm text-[var(--dim)]">Lead classification lives in the Match queue, outreach drafts on each lead, and the next-experiment suggestion in the Cohort tab — all running on these same settings.</p>
-        </>
-      )}
+      <p className="text-sm text-[var(--dim)]">Pain language lives on the Profile tab, lead classification on the Results tab, outreach drafts on each lead, and feedback plus the next-experiment suggestion in the Cohort tab — all running on these same settings.</p>
     </section>
   );
 }
@@ -1093,7 +1102,7 @@ function ConnBadge({ connections, channel }: { connections: State["connections"]
     : <span className="rounded-full bg-[var(--surface-alt)] px-2 py-0.5 text-xs font-semibold text-[var(--dim)]">Not connected</span>;
 }
 
-function ChannelsTab({ connections, profile, insights, llmConfigured, flash, invalidate }: { connections: State["connections"]; profile?: Profile; insights: State["insights"]; llmConfigured: boolean; flash: (m: string) => void; invalidate: () => void }) {
+function ChannelsTab({ connections, flash, invalidate }: { connections: State["connections"]; flash: (m: string) => void; invalidate: () => void }) {
   const disc = useMutation({ mutationFn: (channel: string) => api.disconnectChannel({ channel }), onSuccess: () => { invalidate(); flash("Disconnected."); } });
   const [bsky, setBsky] = useState({ handle: "", appPassword: "" });
   const bskyConn = useMutation({ mutationFn: () => api.connectBluesky(bsky), onSuccess: (r) => { flash(r.message); if (r.ok) { invalidate(); setBsky({ handle: "", appPassword: "" }); } } });
@@ -1187,21 +1196,19 @@ function ChannelsTab({ connections, profile, insights, llmConfigured, flash, inv
         </ul>
       </div>
 
-      {/* Insights */}
-      {profile && <InsightForm profile={profile} insights={insights} llmConfigured={llmConfigured} flash={flash} invalidate={invalidate} />}
     </section>
   );
 }
 
 function InsightForm({ profile, insights, llmConfigured, flash, invalidate }: { profile: Profile; insights: State["insights"]; llmConfigured: boolean; flash: (m: string) => void; invalidate: () => void }) {
   const [f, setF] = useState({ sourceLabel: "", rawText: "" });
-  const add = useMutation({ mutationFn: () => api.addInsight({ profileId: profile.id, ...f }), onSuccess: (r) => { invalidate(); setF({ sourceLabel: "", rawText: "" }); flash(r.painLanguage ? "Insight saved — pain language extracted below. Fold the sharpest phrases into your profile keywords." : r.llmStatus === "not_configured" ? "Insight saved, but pain-language extraction is blocked: Muse setup is required. Enter your Muse API key in the AI tab — in the app only — then re-run extraction by saving the review again." : "Insight saved."); } });
+  const add = useMutation({ mutationFn: () => api.addInsight({ profileId: profile.id, ...f }), onSuccess: (r) => { invalidate(); setF({ sourceLabel: "", rawText: "" }); flash(r.painLanguage ? "Insight saved — pain language extracted below. Fold the sharpest phrases into your profile keywords." : r.llmStatus === "not_configured" ? "Insight saved, but pain-language extraction is blocked: Muse setup is required. Enter your Muse API key in Settings — in the app only — then re-run extraction by saving the review again." : "Insight saved."); } });
   const del = useMutation({ mutationFn: (id: number) => api.deleteInsight({ id }), onSuccess: () => invalidate() });
   return (
     <div className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-4">
       <h3 className="font-serif text-base font-bold">Competitor reviews — insight only</h3>
       <p className="mt-1 text-sm text-[var(--dim)]">You can't message a reviewer, and poaching them publicly looks bad. Paste a 1–3★ review here instead: EarlyProof extracts the pain language so you can find the same person, saying the same words, on a channel where you can actually reach them.</p>
-      {!llmConfigured && <p className="mt-2 rounded-[var(--radius)] bg-[var(--amber-bg)] p-2 text-sm text-[var(--amber)]"><strong>Setup required:</strong> extraction runs on your Muse model, so it stays blocked until Muse is configured in the AI tab.</p>}
+      {!llmConfigured && <p className="mt-2 rounded-[var(--radius)] bg-[var(--amber-bg)] p-2 text-sm text-[var(--amber)]"><strong>Setup required:</strong> extraction runs on your Muse model, so it stays blocked until Muse is configured in Settings.</p>}
       <form className="mt-2 space-y-2" onSubmit={(e: FormEvent) => { e.preventDefault(); add.mutate(); }}>
         <div><label htmlFor="ins-src" className={labelCls}>Source</label><input id="ins-src" aria-label="Review source" value={f.sourceLabel} onChange={(e) => setF((v) => ({ ...v, sourceLabel: e.target.value }))} className={inputCls} placeholder="e.g. App Store review of CompetitorX, 2★" /></div>
         <div><label htmlFor="ins-text" className={labelCls}>Review text</label><textarea id="ins-text" aria-label="Review text" required rows={3} value={f.rawText} onChange={(e) => setF((v) => ({ ...v, rawText: e.target.value }))} className={inputCls} placeholder="Paste the review…" /></div>
