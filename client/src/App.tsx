@@ -325,8 +325,7 @@ function SearchTab({ profile, expansions, llmConfigured, connections, channels, 
   // Irrelevant channels are hidden, not displayed — one quiet line reveals
   // them for override. Channels searchable right now:
   const EXECUTABLE = new Set(["bluesky", "hackernews", "github", "stackexchange", "agingcare", "mumsnet", "makeuptalk", "lipstickalley", "devto", "lobsters"]);
-  const [showHidden, setShowHidden] = useState(false);
-  useEffect(() => { setShowHidden(false); }, [profile.id]);
+
   // Search-run progress: the server records real phases per run; the latest
   // run's plain-words summary is shown once it lands.
   const runQ = useQuery({ queryKey: ["run", runId], queryFn: () => api.searchRunStatus({ runId }), enabled: runId > 0, refetchOnWindowFocus: false });
@@ -339,7 +338,6 @@ function SearchTab({ profile, expansions, llmConfigured, connections, channels, 
     ? openRecs.map((r) => ({ channel: r.channel, label: `${r.label} · ${descriptorFor(r.channel)}`, fit: r.fit }))
     : OPEN_OPTS.map(([v, label]) => ({ channel: v, label, fit: recFit[v] as string | undefined }));
   const shownOpts = lineup.filter((o) => o.fit !== "poor");
-  const poorOpts = lineup.filter((o) => o.fit === "poor");
   // Muse's plan plus web discovery name places EarlyProof cannot search
   // (subreddits, Discords, hashtags): shown as venues to join by hand,
   // never as channels.
@@ -424,22 +422,6 @@ function SearchTab({ profile, expansions, llmConfigured, connections, channels, 
           </div>
           {recMessage && <p className="mt-2 text-xs text-[var(--dim)]">{recMessage} Hover a channel for why.</p>}
         </fieldset>
-        {poorOpts.length > 0 && !showHidden && (
-          <button type="button" className="mt-2 text-xs text-[var(--dim)] underline" onClick={() => setShowHidden(true)}>Show {poorOpts.length} hidden channels</button>
-        )}
-        {showHidden && (
-          <div className="mt-2 space-y-1.5 rounded-[var(--radius)] border border-dashed border-[var(--border)] p-2 text-sm">
-            {poorOpts.map((o) => (
-              <div key={o.channel} className="flex flex-wrap items-center gap-2">
-                <label className="flex cursor-pointer items-center gap-2 rounded-full border border-[var(--border)] px-3 py-1.5 text-sm">
-                  <input type="checkbox" aria-label={o.label} checked={channels.includes(o.channel)} onChange={() => toggle(o.channel)} />{o.label}
-                </label>
-                <span className="text-xs text-[var(--dim)]">{recReasons[o.channel]}</span>
-              </div>
-            ))}
-            <button type="button" className="text-xs text-[var(--dim)] underline" onClick={() => setShowHidden(false)}>Hide again</button>
-          </div>
-        )}
         {elseTalk.length > 0 && (
           <div className="mt-3 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface-alt)] p-3">
             <h3 className="font-serif text-base font-bold">Where else they talk</h3>
