@@ -7,7 +7,7 @@ import { Database } from "bun:sqlite";
 import { eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/bun-sqlite";
 import { complete } from "./inference-stub.ts";
-import { Actions, analyseText, shouldRetryFetch, matchVariant, synonymsFor, sitemapLocs, slugTitleFor, sitemapForumsFor, filterSitemapLocs, sitemapCandidate, channelRecsFor, stackSitesFor, seCandidate } from "../server/src/actions.ts";
+import { Actions, analyseText, shouldRetryFetch, matchVariant, synonymsFor, sitemapLocs, slugTitleFor, sitemapForumsFor, filterSitemapLocs, sitemapCandidate, channelRecsFor, stackSitesFor, seCandidate, devtoTagsFor, lobstersFor, devtoCandidate, lobstersCandidate } from "../server/src/actions.ts";
 import { META_MODEL, buildResponsesRequest, extractJsonValue, isDirectKey, completeViaMetaModel } from "../server/src/meta-api.ts";
 import { GATE_CORPUS, WILLOW, SECONDHIFT, DEV, MAKEUP, DAWNLITE } from "./gate-corpus.ts";
 import * as schema from "../server/src/schema.ts";
@@ -157,8 +157,19 @@ check(!!mRecs.find((r) => r.channel === "hackernews" && r.fit === "poor") && !!m
 // clustered topic, and each forum earns its place on its own.
 const MIRROR_KIN = { productName: "Magic Mirror", productDesc: "Helps people find cosmetics and put on makeup", audience: "As a mom I have no time; tired parents and mothers doing school-run makeup", pain: "never enough sleep so makeup looks bad, wasting money on the wrong foundation", workaround: "watch random tutorials", keywords: "makeup cosmetics", coreAction: "" };
 const kRecs = channelRecsFor(MIRROR_KIN, null).recs;
-check(sitemapForumsFor(MIRROR_KIN).map((f) => f.channel).join(",") === "makeuptalk" && !!kRecs.find((r) => r.channel === "agingcare" && r.fit === "poor") && !!kRecs.find((r) => r.channel === "mumsnet" && r.fit === "poor") && !!kRecs.find((r) => r.channel === "makeuptalk" && r.fit === "best" && !r.needsConnection), "makeup + kin words: only MakeupTalk maps, best + open; family forums poor", null);
-check(sitemapForumsFor(MAKEUP).map((f) => f.channel).join(",") === "makeuptalk" && !!channelRecsFor(MAKEUP, null).recs.find((r) => r.channel === "makeuptalk" && r.fit === "best"), "makeup fixture: MakeupTalk maps and leads recs", null);
+check(sitemapForumsFor(MIRROR_KIN).map((f) => f.channel).join(",") === "makeuptalk,lipstickalley" && !!kRecs.find((r) => r.channel === "agingcare" && r.fit === "poor") && !!kRecs.find((r) => r.channel === "mumsnet" && r.fit === "poor") && !!kRecs.find((r) => r.channel === "makeuptalk" && r.fit === "best" && !r.needsConnection) && !!kRecs.find((r) => r.channel === "lipstickalley" && r.fit === "best" && !r.needsConnection) && !!kRecs.find((r) => r.channel === "devto" && r.fit === "poor") && !!kRecs.find((r) => r.channel === "lobsters" && r.fit === "poor"), "makeup + kin words: beauty forums best + open; family forums, devto, lobsters poor", null);
+check(sitemapForumsFor(MAKEUP).map((f) => f.channel).join(",") === "makeuptalk,lipstickalley" && !!channelRecsFor(MAKEUP, null).recs.find((r) => r.channel === "makeuptalk" && r.fit === "best"), "makeup fixture: beauty forums map and lead recs", null);
+check(JSON.stringify(devtoTagsFor(DEV)) === JSON.stringify(["webdev", "programming"]) && devtoTagsFor(MAKEUP).length === 0 && JSON.stringify(devtoTagsFor(SECONDHIFT)) === JSON.stringify(["career"]), "devto tags: dev gets webdev+programming, career gets career, makeup none");
+check(lobstersFor(DEV) === true && lobstersFor(MAKEUP) === false && lobstersFor(SECONDHIFT) === false, "lobsters: dev only");
+const dRecs2 = channelRecsFor(DEV, null).recs;
+check(!!dRecs2.find((r) => r.channel === "devto" && r.fit !== "poor") && !!dRecs2.find((r) => r.channel === "lobsters" && r.fit !== "poor"), "dev: devto + lobsters viable", null);
+// A plan community votes its channel up: Stack Exchange is poor for makeup
+// on signals alone, but a Muse plan mapping a community there rescues it.
+const planVote = channelRecsFor(MAKEUP, { communities: [{ name: "r/MakeupAddiction", where: "Reddit", channel: "stackexchange", access: "open", why: "test" }] } as any).recs;
+check(!!planVote.find((r) => r.channel === "stackexchange" && r.fit !== "poor"), "plan community vote rescues a poor channel", null);
+const dtCand = devtoCandidate({ id: 1, title: "t", description: "d", url: "https://dev.to/x", user: { username: "u" }, published_at: "2026-01-01" }, "career", DEV, 1);
+const loCand = lobstersCandidate({ short_id: "abc", title: "t", description_plain: "d", comments_url: "https://lobste.rs/s/abc", submitter_user: "u", created_at: "2026-01-01", tags: ["a", "b"] }, DEV, 1);
+check(!!dtCand && dtCand.values.channel === "devto" && !!loCand && loCand.values.channel === "lobsters" && String(loCand.values.community).includes("a"), "devto/lobsters candidate builders shape leads", null);
 const sRecs = channelRecsFor(SECONDHIFT, null).recs;
 const sRd = sRecs.find((r) => r.channel === "reddit_poc");
 check(!!sRd && sRd.needsConnection && sRd.fit !== "poor", "career: Reddit surfaced with connection note", sRd);
@@ -231,6 +242,12 @@ if (!acForum || !mnForum || !mtForum) throw new Error("SMOKE FAIL: forum mapping
 check(
   JSON.stringify(filterSitemapLocs(mtForum, ["https://www.makeuptalk.com/sitemap-1.xml", "https://www.makeuptalk.com/sitemap-4.xml", "https://www.makeuptalk.com/sitemap-3.xml", "https://www.makeuptalk.com/threads/eyeliner.6/"], MAKEUP)) === JSON.stringify(["https://www.makeuptalk.com/sitemap-4.xml", "https://www.makeuptalk.com/sitemap-3.xml"]),
   "makeuptalk fetches newest content files only, never old files or thread urls",
+);
+const lsaForum = sitemapForumsFor(MAKEUP).find((f) => f.channel === "lipstickalley");
+if (!lsaForum) throw new Error("SMOKE FAIL: lipstickalley mapping missing");
+check(
+  JSON.stringify(filterSitemapLocs(lsaForum, ["https://www.lipstickalley.com/sitemap-1.xml", "https://www.lipstickalley.com/sitemap-43.xml", "https://www.lipstickalley.com/sitemap-42.xml"], MAKEUP)) === JSON.stringify(["https://www.lipstickalley.com/sitemap-43.xml", "https://www.lipstickalley.com/sitemap-42.xml"]),
+  "lipstickalley fetches newest content files only",
 );
 const MN_LOCS = [
   "https://www.mumsnet.com/sitemap/talk/parenting/parenting_1",

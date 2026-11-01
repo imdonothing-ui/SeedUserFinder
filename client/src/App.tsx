@@ -26,11 +26,11 @@ function parsePlan(s: string): ExpansionPlanData {
 
 const CHANNEL_LABEL: Record<string, string> = {
   bluesky: "Bluesky", hackernews: "Hacker News", github: "GitHub", stackexchange: "Stack Exchange",
-  agingcare: "AgingCare", mumsnet: "Mumsnet", makeuptalk: "MakeupTalk", reddit_poc: "Reddit · POC",
+  agingcare: "AgingCare", mumsnet: "Mumsnet", makeuptalk: "MakeupTalk", lipstickalley: "Lipstick Alley", devto: "Dev.to", lobsters: "Lobsters", reddit_poc: "Reddit · POC",
   reddit: "Reddit · pasted", x: "X · pasted", facebook: "Facebook Group", discord: "Discord",
   slack: "Slack", linkedin: "LinkedIn DM", instagram: "Instagram DM", manual: "Manual",
 };
-const NEW_CHANNELS = new Set(["stackexchange", "agingcare", "mumsnet", "makeuptalk"]);
+const NEW_CHANNELS = new Set(["stackexchange", "agingcare", "mumsnet", "makeuptalk", "lipstickalley", "devto", "lobsters"]);
 const STAGES = ["new", "drafted", "approved", "sent", "replied", "conversation", "trial"] as const;
 const STAGE_LABEL: Record<string, string> = { new: "Found", drafted: "Drafted", approved: "Approved", sent: "Sent", replied: "Replied", conversation: "Conversation", trial: "In trial", dismissed: "Dismissed" };
 const EVENT_TYPES = ["started", "core", "returned", "paid", "referred"] as const;
@@ -63,7 +63,7 @@ function LlmSetupGate({ onGoSettings }: { onGoSettings: () => void }) {
 
 // Open channels searched by default: public, searchable, no founder
 // connection needed. Closed channels are never in this default list.
-const OPEN_DEFAULTS = ["bluesky", "hackernews", "github", "stackexchange", "agingcare", "mumsnet", "makeuptalk"];
+const OPEN_DEFAULTS = ["bluesky", "hackernews", "github", "stackexchange", "agingcare", "mumsnet", "makeuptalk", "lipstickalley", "devto", "lobsters"];
 
 // Plain-words result narration shared by search and expand-and-rerun.
 function describeSearch(r: { found: number; created: number; discarded: number; pruned: number; promoted: number; synthesized: number; synthesisStatus: string; synthesisMessage: string; errors: { channel: string; message: string }[]; expansionRound: number; expansionAnchor: string; expansionQueries: string[]; nextSuggestions: string[] }, expanded: boolean, isFirstFeedback: boolean) {
@@ -293,7 +293,7 @@ function ProfileTab({ profiles, activeProfile, onSelect, onDone }: { profiles: P
 
 /* Search is input only: pick channels, press the one big button, watch it
    work. Matches appear on the Results tab, which opens automatically. */
-const OPEN_OPTS: [string, string][] = [["bluesky", "Bluesky · public search"], ["hackernews", "Hacker News · public search"], ["github", "GitHub · public search"], ["stackexchange", "Stack Exchange · public Q&A"], ["agingcare", "AgingCare · forum threads"], ["mumsnet", "Mumsnet · forum threads"], ["makeuptalk", "MakeupTalk · forum threads"]];
+const OPEN_OPTS: [string, string][] = [["bluesky", "Bluesky · public search"], ["hackernews", "Hacker News · public search"], ["github", "GitHub · public search"], ["stackexchange", "Stack Exchange · public Q&A"], ["agingcare", "AgingCare · forum threads"], ["mumsnet", "Mumsnet · forum threads"], ["makeuptalk", "MakeupTalk · forum threads"], ["lipstickalley", "Lipstick Alley · forum threads"], ["devto", "Dev.to · articles"], ["lobsters", "Lobsters · dev discussion"]];
 
 function SearchTab({ profile, expansions, llmConfigured, connections, channels, setChannels, subs, setSubs, recReasons, recFit, recMessage, runId, setRunId, setLastSearch, result, setResult, onGoSettings, onDone, flash, invalidate }: {
   profile: Profile; expansions: State["expansions"]; llmConfigured: boolean; connections: State["connections"];
@@ -307,12 +307,30 @@ function SearchTab({ profile, expansions, llmConfigured, connections, channels, 
   // FirstFeedback HN retune: for this profile Hacker News is Ask HN-only —
   // help-request posts, with Show HN showcases excluded server-side.
   const isFirstFeedback = profile.productName.trim().toLowerCase() === "firstfeedback";
+  // Irrelevant channels are hidden, not displayed — one quiet line reveals
+  // them for override. Channels searchable right now:
+  const EXECUTABLE = new Set(["bluesky", "hackernews", "github", "stackexchange", "agingcare", "mumsnet", "makeuptalk", "lipstickalley", "devto", "lobsters"]);
+  const poorOpts = OPEN_OPTS.filter(([v]) => recFit[v] === "poor");
+  const [showHidden, setShowHidden] = useState(false);
+  useEffect(() => { setShowHidden(false); }, [profile.id]);
   // Search-run progress: the server records real phases per run; the latest
   // run's plain-words summary is shown once it lands.
   const runQ = useQuery({ queryKey: ["run", runId], queryFn: () => api.searchRunStatus({ runId }), enabled: runId > 0, refetchOnWindowFocus: false });
   const redditConnected = !!connections.find((c) => c.channel === "reddit_poc")?.connected;
   const latestExpansion = [...expansions].sort((a, b) => b.round - a.round)[0];
   const plan: ExpansionPlanData | null = latestExpansion ? parsePlan(latestExpansion.plan) : null;
+  // Muse's plan also names places EarlyProof cannot search (subreddits,
+  // Discords, hashtags): shown as venues to join by hand, never as channels.
+  const elseTalk = (() => {
+    const seen = new Set<string>();
+    return (plan?.communities ?? []).filter((c) => {
+      if (!c.name || EXECUTABLE.has(c.channel) || channels.includes(c.channel)) return false;
+      const k = c.name.toLowerCase();
+      if (seen.has(k)) return false;
+      seen.add(k);
+      return true;
+    });
+  })();
   const genPlan = useMutation({
     mutationFn: () => api.generateExpansionPlan({ profileId: profile.id }),
     onSuccess: (r) => { invalidate(); setResult(r.message); if (r.status === "ok") flash("Expansion plan saved — it will drive the next search."); },
@@ -357,21 +375,38 @@ function SearchTab({ profile, expansions, llmConfigured, connections, channels, 
             ))}
           </div>
           {recMessage && <p className="mt-2 text-xs text-[var(--dim)]">{recMessage} Hover a channel for why.</p>}
+          {!plan && genPlan.isPending && <p role="status" className="mt-2 text-xs font-medium text-[var(--dim)]">Finding where your people talk… channel picks sharpen when Muse's plan lands.</p>}
         </fieldset>
-        {OPEN_OPTS.some(([v]) => recFit[v] === "poor") && (
-          <details className="mt-2 rounded-[var(--radius)] border border-dashed border-[var(--border)] p-2 text-sm">
-            <summary className="cursor-pointer text-[var(--dim)]">Not recommended for this profile ({OPEN_OPTS.filter(([v]) => recFit[v] === "poor").length}) — excluded from search, open to override</summary>
-            <div className="mt-2 space-y-1.5">
-              {OPEN_OPTS.filter(([v]) => recFit[v] === "poor").map(([v, label]) => (
-                <div key={v} className="flex flex-wrap items-center gap-2">
-                  <label className="flex cursor-pointer items-center gap-2 rounded-full border border-[var(--border)] px-3 py-1.5 text-sm">
-                    <input type="checkbox" aria-label={label} checked={channels.includes(v)} onChange={() => toggle(v)} />{label}
-                  </label>
-                  <span className="text-xs text-[var(--dim)]">{recReasons[v]}</span>
-                </div>
+        {poorOpts.length > 0 && !showHidden && (
+          <button type="button" className="mt-2 text-xs text-[var(--dim)] underline" onClick={() => setShowHidden(true)}>Show {poorOpts.length} hidden channels</button>
+        )}
+        {showHidden && (
+          <div className="mt-2 space-y-1.5 rounded-[var(--radius)] border border-dashed border-[var(--border)] p-2 text-sm">
+            {poorOpts.map(([v, label]) => (
+              <div key={v} className="flex flex-wrap items-center gap-2">
+                <label className="flex cursor-pointer items-center gap-2 rounded-full border border-[var(--border)] px-3 py-1.5 text-sm">
+                  <input type="checkbox" aria-label={label} checked={channels.includes(v)} onChange={() => toggle(v)} />{label}
+                </label>
+                <span className="text-xs text-[var(--dim)]">{recReasons[v]}</span>
+              </div>
+            ))}
+            <button type="button" className="text-xs text-[var(--dim)] underline" onClick={() => setShowHidden(false)}>Hide again</button>
+          </div>
+        )}
+        {elseTalk.length > 0 && (
+          <div className="mt-3 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface-alt)] p-3">
+            <h3 className="font-serif text-base font-bold">Where else they talk</h3>
+            <p className="mt-1 text-sm text-[var(--dim)]">Muse found these places for this profile. EarlyProof can't search them — no public API — so join them yourself; anyone promising goes in by hand on the Results tab, and Muse synthesizes them like the rest.</p>
+            <ul className="mt-2 space-y-1.5 text-sm">
+              {elseTalk.map((c, i) => (
+                <li key={i} className="rounded-[var(--radius)] bg-[var(--surface)] px-2.5 py-1.5">
+                  <span className="font-medium">{c.name}</span>{c.where && <span className="text-[var(--dim)]"> · {c.where}</span>}
+                  <span className="ml-2 rounded-full bg-[var(--amber-bg)] px-2 py-0.5 text-[11px] font-semibold text-[var(--amber)]">{c.access === "closed" ? "Closed — you join & send" : "Not searched — add by hand"}</span>
+                  {c.why && <span className="mt-0.5 block text-[var(--dim)]">{c.why}</span>}
+                </li>
               ))}
-            </div>
-          </details>
+            </ul>
+          </div>
         )}
         {isFirstFeedback && (
           <p className="mt-3 rounded-[var(--radius)] bg-[var(--accent-bg)] p-2 text-sm"><strong>Hacker News for FirstFeedback is Ask HN-only.</strong> HN is searched with help-request phrasing — “how did you get your first users”, “launched to crickets”, “no traction”, “need feedback on my project” — and only posts whose title starts with <strong>“Ask HN”</strong> count as candidates. <strong>“Show HN” showcases are excluded</strong> before the pre-filter: earlier runs were dominated by Show HN announcements, which are people launching, not people asking for help finding first users. Bluesky and GitHub search exactly as before.</p>

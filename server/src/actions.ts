@@ -623,7 +623,7 @@ type ExpansionPlan = {
 // the founder's own profile text vote channels up or down, Muse's expansion
 // plan votes with the communities it maps, and per-profile mappings decide
 // whether Stack Exchange or a sitemap forum earns a place at all.
-const OPEN_SEARCH_CHANNELS = ["bluesky", "hackernews", "github", "stackexchange", "agingcare", "mumsnet", "makeuptalk"];
+const OPEN_SEARCH_CHANNELS = ["bluesky", "hackernews", "github", "stackexchange", "agingcare", "mumsnet", "makeuptalk", "lipstickalley", "devto", "lobsters"];
 const DEV_SIGNALS = ["software", "developer", "developers", "programmer", "coding", "github", "api", "saas", "devtools", "open source", "pull request", "codebase", "deploy", "localhost", "npm", "startup", "indie hacker", "hacker news", "tech stack", "side project", "web app", "mobile app", "launch"];
 const CAREER_SIGNALS = ["laid off", "layoff", "layoffs", "unemployed", "job search", "freelance", "freelancer", "side hustle", "passive income", "income", "career", "interview", "resume", "fired", "severance", "paycheck"];
 const ISSUE_SIGNALS = ["bug", "bugs", "error", "errors", "broken", "issue", "issues", "crash", "exception"];
@@ -696,6 +696,13 @@ export function channelRecsFor(profile: ProfileLike, plan: ExpansionPlan | null)
   const seSites = stackSitesFor(profile);
   if (seSites.length) bump("stackexchange", 2, `People ask exactly this kind of question on ${seSites.join(" + ")} — keyless search.`);
   else bump("stackexchange", -1, "No Stack Exchange community matches this topic — it would search blindly.");
+  // Dev.to articles earn their place per profile like SE: mapped tags or nothing.
+  const dtTags = devtoTagsFor(profile);
+  if (dtTags.length) bump("devto", 2, `Dev.to '${dtTags.join(" + ")}' articles match this topic — keyless tag API.`);
+  else bump("devto", -1, "No Dev.to tags match this topic — it would search blindly.");
+  // Lobsters front page is working developers talking shop: dev profiles only.
+  if (lobstersFor(profile)) bump("lobsters", 2, "Lobsters front page is working developers talking shop — your people are there.");
+  else bump("lobsters", -1, "Lobsters is a developer conversation — your people aren't there.");
   // Sitemap-indexed forums earn their place per profile like SE, each forum
   // on its own: one forum mapping never shields the other from the blind
   // penalty — a makeup profile mentioning moms must not keep AgingCare
@@ -728,6 +735,67 @@ export function stackSitesFor(profile: ProfileLike): string[] {
   if (countSignals(hay, FAMILY_SIGNALS) >= 2) sites.push("parenting");
   if (countSignals(hay, MONEY_SIGNALS) >= 2) sites.push("money");
   return [...new Set(sites)].slice(0, 2);
+}
+
+// Dev.to per-profile tags (cap 2): the keyless articles API takes a tag, not
+// a query — recent articles under the tag are gated by the anchor, same as a
+// sitemap forum. Dev.to is developers talking shop plus career talk, so a
+// makeup profile maps no tag here, ever.
+export function devtoTagsFor(profile: ProfileLike): string[] {
+  const hay = normText([profile.productName, profile.productDesc, profile.audience, profile.pain, profile.workaround, profile.keywords, profile.coreAction].join(" "));
+  const tags: string[] = [];
+  if (countSignals(hay, DEV_SIGNALS) >= 2) tags.push("webdev", "programming");
+  if (countSignals(hay, CAREER_SIGNALS) >= 2) tags.push("career");
+  return [...new Set(tags)].slice(0, 2);
+}
+
+// Lobsters front page is working developers talking shop — no per-topic
+// query API exists, so mapping is signal-based: dev profiles only.
+export function lobstersFor(profile: ProfileLike): boolean {
+  const hay = normText([profile.productName, profile.productDesc, profile.audience, profile.pain, profile.workaround, profile.keywords, profile.coreAction].join(" "));
+  return countSignals(hay, DEV_SIGNALS) >= 2;
+}
+
+export function devtoCandidate(o: Record<string, unknown>, tag: string, profile: ProfileLike, profileId: number): { key: string; values: typeof schema.leads.$inferInsert; s: Relevance } | null {
+  const id = String(o.id ?? "");
+  if (!id) return null;
+  const user = asObj(o.user);
+  const title = String(o.title ?? "");
+  const body = String(o.description ?? "").slice(0, 900);
+  const s = analyseText(`${title} ${body}`, profile, "devto");
+  return {
+    key: `devto:${id}`,
+    values: {
+      profileId, channel: "devto", mode: "live_post",
+      externalUrl: String(o.url ?? ""), externalId: `devto:${id}`,
+      author: String(user.username ?? user.name ?? ""), authorHandle: String(user.username ?? ""),
+      title, body, community: `Dev.to · ${tag}`,
+      postedAt: String(o.published_at ?? o.created_at ?? ""),
+      matchScore: s.score, matchReason: s.reason,
+    },
+    s,
+  };
+}
+
+export function lobstersCandidate(o: Record<string, unknown>, profile: ProfileLike, profileId: number): { key: string; values: typeof schema.leads.$inferInsert; s: Relevance } | null {
+  const id = String(o.short_id ?? "");
+  if (!id) return null;
+  const title = String(o.title ?? "");
+  const body = String(o.description_plain ?? o.description ?? "").slice(0, 900);
+  const tags = Array.isArray(o.tags) ? (o.tags as unknown[]).map(String).slice(0, 3).join(", ") : "";
+  const s = analyseText(`${title} ${body}`, profile, "lobsters");
+  return {
+    key: `lobsters:${id}`,
+    values: {
+      profileId, channel: "lobsters", mode: "live_post",
+      externalUrl: String(o.comments_url ?? o.url ?? ""), externalId: `lobsters:${id}`,
+      author: String(o.submitter_user ?? ""), authorHandle: String(o.submitter_user ?? ""),
+      title, body, community: tags ? `Lobsters · ${tags}` : "Lobsters",
+      postedAt: String(o.created_at ?? ""),
+      matchScore: s.score, matchReason: s.reason,
+    },
+    s,
+  };
 }
 
 export function seCandidate(o: Record<string, unknown>, site: string, profile: ProfileLike, profileId: number): { key: string; values: typeof schema.leads.$inferInsert; s: Relevance } | null {
@@ -820,6 +888,17 @@ const SITEMAP_FORUMS: SitemapForum[] = [
     // skipped gracefully — older threads still searched, never blind.
     sections: [{ token: "sitemap-4", signals: null }, { token: "sitemap-3", signals: null }],
     communityFor: () => "MakeupTalk",
+    core: BEAUTY_CORE, kin: BEAUTY_KIN, minScore: 2, maxFiles: 2,
+  },
+  {
+    channel: "lipstickalley", label: "Lipstick Alley",
+    index: "https://www.lipstickalley.com/sitemap.php",
+    // Same XenForo sequential scheme, newest last — sitemap-43/42 verified
+    // 2026-11-01 against a 43-file index (file 1 starts years back).
+    // Lipstick Alley is mostly gossip, not beauty: the anchor gate keeps
+    // off-topic threads out, same as every forum here.
+    sections: [{ token: "sitemap-43", signals: null }, { token: "sitemap-42", signals: null }],
+    communityFor: () => "Lipstick Alley",
     core: BEAUTY_CORE, kin: BEAUTY_KIN, minScore: 2, maxFiles: 2,
   },
 ];
@@ -1011,7 +1090,7 @@ async function generateExpansionRound(
   const painPhrasesSaved: string[] = (() => { try { const v = JSON.parse(profile.painPhrases || "[]") as unknown; return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : []; } catch { return []; } })();
   const isLaterRound = round > 1;
   const r = await runLlm(ctx, "small",
-    `You are planning WHERE to find seed users for a founder — not just rewording one keyword. Build a search expansion plan from this target profile.\n\nProfile — Product: ${profile.productName} — ${profile.productDesc}\nAudience: ${profile.audience}\nPain (founder's words): ${profile.pain}\nWorkaround today: ${profile.workaround}\nFounder keywords: ${profile.keywords}\nCore action: ${profile.coreAction}\nPain phrases already known: ${painPhrasesSaved.join(" · ") || "(none yet)"}\n\nDOMAIN ANCHOR (hard rule): the anchor term is "${anchorTerm}". Valid anchor terms for queries: ${terms.join(", ")}. EVERY query you return MUST contain at least one of those anchor terms, word-for-word. A query made only of generic words (like "skill", "struggle", "help", "sucks", "beginner") is forbidden — unanchored queries are discarded server-side. If you broaden, broaden the pain/audience/community around the anchor, never drop the anchor.\n\nReturn:\n- anchorTerm: exactly "${anchorTerm}".\n- queries: ${isLaterRound ? "6-8" : "5-7"} search queries a real person in pain might match — variants and synonyms in the person's own language, each with a one-line intent. Cover different phrasings of the pain, the workaround, and beginner/first-time framings — all anchored.\n- painPhrases: 5-8 related pain phrases and adjacent problem phrasings in their words (these inform the founder; they are not all queries).\n- adjacentProblems: 3-5 adjacent problems the same person hits around this pain.\n- adjacentAudiences: 3-5 adjacent audiences — people one step wider than the profile who plausibly hit the same anchored pain.\n- communities: 5-8 specific places these people already talk — name the actual kind of place (e.g. for a beauty profile: beginner makeup subreddits, beauty forums, tutorial comment sections, beginner beauty groups/hashtags; for a caregiver profile: AgingCare Q&A and Discussions threads, Mumsnet elderly_parents threads). For each: name, where (platform/place), channel — one of bluesky, hackernews, github, stackexchange, agingcare, mumsnet, makeuptalk, reddit_poc, reddit, x, facebook, discord, slack, linkedin, instagram, youtube (use stackexchange only for Q&A-style communities, agingcare for caregiver/elder-care forum threads, mumsnet for parenting/family forum threads, makeuptalk for beauty/makeup/cosmetics forum threads) — access: "open" if it is a public searchable channel EarlyProof searches by default, "closed" if the founder must provide an API/connection or join and send themselves, and why this place fits.\n- relaxations: 2-4 specific over-strict terms or exact phrases from the profile/keywords that could be relaxed WITHOUT dropping the anchor (name the exact term and what to relax it to).\n- nextSuggestions: 3-5 concrete next expansion moves if this round still returns 0 synthesized results — broaden to an adjacent audience or adjacent pain (still anchored), try a different named channel or community, relax a named over-strict term.\n${isLaterRound ? `\nThis is expansion round ${round}. The previous search context: ${context.reason} It found ${context.found} candidates, the pre-filter dropped ${context.discarded}, Muse synthesized ${context.synthesized} results, and ${context.seenCount} leads are already seen (new results are deduplicated against them — do not repeat old queries). Previous rounds already tried these queries: ${previousQueries.join(" · ") || "(none)"}. Your new queries must be DIFFERENT from those: lean on the adjacent audiences, adjacent pains, new communities and the relaxations — while keeping every query anchored to "${anchorTerm}".` : `\nThis is expansion round 1, generated before the search runs.`}`,
+    `You are planning WHERE to find seed users for a founder — not just rewording one keyword. Build a search expansion plan from this target profile.\n\nProfile — Product: ${profile.productName} — ${profile.productDesc}\nAudience: ${profile.audience}\nPain (founder's words): ${profile.pain}\nWorkaround today: ${profile.workaround}\nFounder keywords: ${profile.keywords}\nCore action: ${profile.coreAction}\nPain phrases already known: ${painPhrasesSaved.join(" · ") || "(none yet)"}\n\nDOMAIN ANCHOR (hard rule): the anchor term is "${anchorTerm}". Valid anchor terms for queries: ${terms.join(", ")}. EVERY query you return MUST contain at least one of those anchor terms, word-for-word. A query made only of generic words (like "skill", "struggle", "help", "sucks", "beginner") is forbidden — unanchored queries are discarded server-side. If you broaden, broaden the pain/audience/community around the anchor, never drop the anchor.\n\nReturn:\n- anchorTerm: exactly "${anchorTerm}".\n- queries: ${isLaterRound ? "6-8" : "5-7"} search queries a real person in pain might match — variants and synonyms in the person's own language, each with a one-line intent. Cover different phrasings of the pain, the workaround, and beginner/first-time framings — all anchored.\n- painPhrases: 5-8 related pain phrases and adjacent problem phrasings in their words (these inform the founder; they are not all queries).\n- adjacentProblems: 3-5 adjacent problems the same person hits around this pain.\n- adjacentAudiences: 3-5 adjacent audiences — people one step wider than the profile who plausibly hit the same anchored pain.\n- communities: 5-8 specific places these people already talk — name the actual kind of place (e.g. for a beauty profile: beginner makeup subreddits, beauty forums, tutorial comment sections, beginner beauty groups/hashtags; for a caregiver profile: AgingCare Q&A and Discussions threads, Mumsnet elderly_parents threads). For each: name, where (platform/place), channel — one of bluesky, hackernews, github, stackexchange, agingcare, mumsnet, makeuptalk, lipstickalley, devto, lobsters, reddit_poc, reddit, x, facebook, discord, slack, linkedin, instagram, youtube (use stackexchange only for Q&A-style communities, agingcare for caregiver/elder-care forum threads, mumsnet for parenting/family forum threads, makeuptalk or lipstickalley for beauty/makeup/cosmetics forum threads, devto for developer or career articles by tag, lobsters for developer front-page discussion) — access: "open" if it is a public searchable channel EarlyProof searches by default, "closed" if the founder must provide an API/connection or join and send themselves, and why this place fits.\n- relaxations: 2-4 specific over-strict terms or exact phrases from the profile/keywords that could be relaxed WITHOUT dropping the anchor (name the exact term and what to relax it to).\n- nextSuggestions: 3-5 concrete next expansion moves if this round still returns 0 synthesized results — broaden to an adjacent audience or adjacent pain (still anchored), try a different named channel or community, relax a named over-strict term.\n${isLaterRound ? `\nThis is expansion round ${round}. The previous search context: ${context.reason} It found ${context.found} candidates, the pre-filter dropped ${context.discarded}, Muse synthesized ${context.synthesized} results, and ${context.seenCount} leads are already seen (new results are deduplicated against them — do not repeat old queries). Previous rounds already tried these queries: ${previousQueries.join(" · ") || "(none)"}. Your new queries must be DIFFERENT from those: lean on the adjacent audiences, adjacent pains, new communities and the relaxations — while keeping every query anchored to "${anchorTerm}".` : `\nThis is expansion round 1, generated before the search runs.`}`,
     expansionPlanSchema);
   if (!r.ok) return r;
   const o = r.value;
@@ -1029,7 +1108,7 @@ async function generateExpansionRound(
     adjacentAudiences: cleanStrs(o.adjacentAudiences, 5),
     communities: o.communities.slice(0, 8).map((c) => ({
       name: c.name.trim().slice(0, 120), where: c.where.trim().slice(0, 120),
-      channel: ["bluesky", "hackernews", "github", "stackexchange", "agingcare", "mumsnet", "makeuptalk", "reddit_poc", "reddit", "x", "facebook", "discord", "slack", "linkedin", "instagram", "youtube", "manual"].includes(c.channel.trim()) ? c.channel.trim() : "manual",
+      channel: ["bluesky", "hackernews", "github", "stackexchange", "agingcare", "mumsnet", "makeuptalk", "lipstickalley", "devto", "lobsters", "reddit_poc", "reddit", "x", "facebook", "discord", "slack", "linkedin", "instagram", "youtube", "manual"].includes(c.channel.trim()) ? c.channel.trim() : "manual",
       access: c.access.trim().toLowerCase() === "closed" ? "closed" : "open",
       why: c.why.trim().slice(0, 240),
     })).filter((c) => c.name),
@@ -1266,6 +1345,34 @@ async function runChannelSearch(
           const repoUrl = String(o.repository_url ?? ""); const repo = repoUrl.replace("https://api.github.com/repos/", "");
           addCandidate(`gh:${String(o.id ?? "")}`, { profileId: profile.id, channel: "github", mode: "live_post", externalUrl: String(o.html_url ?? ""), externalId: String(o.id ?? ""), author: String(user.login ?? ""), authorHandle: String(user.login ?? ""), title, body: bodyTxt, community: repo, postedAt: String(o.created_at ?? ""), matchScore: s.score, matchReason: s.reason }, s);
         }
+      }
+    } else if (ch === "devto") {
+      // Dev.to keyless articles API (verified 2026-11-01): tag-filtered, no
+      // query param — recent articles under the mapped tags are gated by the
+      // anchor, same honest pattern as the sitemap forums.
+      const tags = devtoTagsFor(profile);
+      if (!tags.length) { errors.push({ channel: "Dev.to", message: "No Dev.to tags match this profile's topic — skipped instead of searching blindly." }); continue; }
+      for (const tag of tags) {
+        const r = await fetchJson(`https://dev.to/api/articles?tag=${encodeURIComponent(tag)}&per_page=20`);
+        if (!r.ok) { errors.push({ channel: "Dev.to", message: `Search failed (HTTP ${r.status}). Try again.` }); continue; }
+        const articles = Array.isArray(r.data) ? r.data : [];
+        for (const a of articles) {
+          const c = devtoCandidate(asObj(a), tag, profile, profile.id);
+          if (!c) continue;
+          addCandidate(c.key, c.values, c.s);
+        }
+      }
+    } else if (ch === "lobsters") {
+      // Lobsters newest.json (verified 2026-11-01): no per-topic query API,
+      // so the front page is gated title-by-title. Dev profiles only — recs
+      // demote it everywhere else, and the gate keeps strays out regardless.
+      const r = await fetchJson("https://lobste.rs/newest.json");
+      if (!r.ok) { errors.push({ channel: "Lobsters", message: `Search failed (HTTP ${r.status}). Try again.` }); continue; }
+      const stories = Array.isArray(r.data) ? r.data : [];
+      for (const st of stories) {
+        const c = lobstersCandidate(asObj(st), profile, profile.id);
+        if (!c) continue;
+        addCandidate(c.key, c.values, c.s);
       }
     } else if (ch === "bluesky") {
       const sess = await ensureBsky(ctx);
