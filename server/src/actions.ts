@@ -701,7 +701,7 @@ async function verifyForumDomain(domain: string): Promise<DynamicVenue | null> {
 }
 
 export type DiscoveryFindings = {
-  evidence: { channel: string; threads: number }[];
+  evidence: { channel: string; threads: number; samples: string[] }[];
   dynamic: DynamicVenue[];
   venues: { name: string; where: string; why: string }[];
 };
@@ -734,13 +734,13 @@ export async function discoverVenuesFor(profile: ProfileLike & { id: number }): 
   const verifyTargets: VenueGroup[] = [];
   for (const g of groups) {
     const reg = REGISTRY_DOMAINS[g.domain];
-    if (reg) { data.evidence.push({ channel: reg, threads: g.urls.length }); continue; }
+    if (reg) { data.evidence.push({ channel: reg, threads: g.urls.length, samples: g.titles.slice(0, 2) }); continue; }
     if (g.sub) {
-      data.venues.push({ name: `r/${g.sub}`, where: "Reddit", why: `Web search found ${g.urls.length} thread${g.urls.length === 1 ? "" : "s"} about '${anchor}' here — no public API, join and add by hand (or connect the Reddit POC).` });
+      data.venues.push({ name: `r/${g.sub}`, where: "Reddit", why: `Web search found ${g.urls.length} thread${g.urls.length === 1 ? "" : "s"} about '${anchor}' here — e.g. “${g.titles[0]}”. No public API: join and add by hand (or connect the Reddit POC).` });
       continue;
     }
     if (g.domain.endsWith(".stackexchange.com") || g.domain === "stackoverflow.com") {
-      data.evidence.push({ channel: "stackexchange", threads: g.urls.length });
+      data.evidence.push({ channel: "stackexchange", threads: g.urls.length, samples: g.titles.slice(0, 2) });
       continue;
     }
     const discussionUrls = g.urls.filter((u) => DISCUSSION_MARKERS.some((mk) => u.toLowerCase().includes(mk)));
@@ -752,7 +752,7 @@ export async function discoverVenuesFor(profile: ProfileLike & { id: number }): 
   for (const v of verified) if (v) { data.dynamic.push(v); verifiedDomains.add(v.domain); }
   for (const g of verifyTargets) {
     if (verifiedDomains.has(g.domain) || data.venues.length >= 6) continue;
-    data.venues.push({ name: labelFor(g.domain), where: g.domain, why: `Web search found ${g.urls.length} discussion thread${g.urls.length === 1 ? "" : "s"} about '${anchor}' here — no thread sitemap, join and add by hand.` });
+    data.venues.push({ name: labelFor(g.domain), where: g.domain, why: `Web search found ${g.urls.length} discussion thread${g.urls.length === 1 ? "" : "s"} about '${anchor}' here — e.g. “${g.titles[0]}”. No thread sitemap: join and add by hand.` });
   }
   discoveryCache.set(profile.id, { at: Date.now(), data });
   return data;
@@ -766,7 +766,7 @@ export function mergeDiscovery<T extends { channel: string; fit: ChannelFit; rea
   for (const e of findings.evidence) {
     const r = recs.find((x) => x.channel === e.channel);
     if (!r) continue;
-    r.reasons.push(`Web search found ${e.threads} discussion thread${e.threads === 1 ? "" : "s"} here about this pain.`);
+    r.reasons.push(`Web search found ${e.threads} discussion thread${e.threads === 1 ? "" : "s"} here about this pain${e.samples.length ? ` — e.g. “${e.samples.join("” · “")}”` : ""}.`);
     if (r.fit === "poor" && FORUM_CHANNELS.has(e.channel) && e.threads >= 2) r.fit = "good";
   }
   return recs;

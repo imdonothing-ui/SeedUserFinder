@@ -175,8 +175,8 @@ check(ddgHits.length === 3 && ddgHits[0].url === "https://www.reddit.com/r/Makeu
 const venues = groupVenues(ddgHits);
 check(venues.length === 3 && !!venues.find((v) => v.key === "reddit:r/makeupaddiction" && v.urls.length === 1) && !!venues.find((v) => v.key === "reddit:r/beauty"), "venues group reddit subs separately from article domains", venues.map((v) => v.key));
 const mgRecs = [{ channel: "mumsnet", fit: "poor", reasons: ["a"] }, { channel: "hackernews", fit: "poor", reasons: ["b"] }] as any;
-mergeDiscovery(mgRecs, { evidence: [{ channel: "mumsnet", threads: 2 }, { channel: "hackernews", threads: 5 }], dynamic: [], venues: [] });
-check(mgRecs[0].fit === "good" && mgRecs[0].reasons.length === 2 && mgRecs[1].fit === "poor" && mgRecs[1].reasons.length === 2, "merge rescues poor forums with thread evidence, never HN showcases", mgRecs);
+mergeDiscovery(mgRecs, { evidence: [{ channel: "mumsnet", threads: 2, samples: ["Sleepless nights again"] }, { channel: "hackernews", threads: 5, samples: ["Show HN: sleep app"] }], dynamic: [], venues: [] });
+check(mgRecs[0].fit === "good" && mgRecs[0].reasons.length === 2 && mgRecs[0].reasons[1].includes("Sleepless nights again") && mgRecs[1].fit === "poor" && mgRecs[1].reasons.length === 2, "merge rescues poor forums with thread evidence, never HN showcases", mgRecs);
 const dynForum = dynamicForumFor("forum:alz-org", { evidence: [], dynamic: [{ slug: "alz-org", label: "Alzconnected", domain: "alzconnected.org", index: "https://alzconnected.org/sitemap.xml", files: ["https://alzconnected.org/sitemap-2.xml"], flat: false }], venues: [] });
 check(!!dynForum && dynForum.channel === "forum:alz-org" && dynForum.label === "Alzconnected" && (dynForum.sections[0] as any).token === "https://alzconnected.org/sitemap-2.xml" && dynamicForumFor("forum:nope", { evidence: [], dynamic: [], venues: [] }) === null, "dynamic forum object carries exact verified file tokens; unknown slug misses", dynForum);
 const dtCand = devtoCandidate({ id: 1, title: "t", description: "d", url: "https://dev.to/x", user: { username: "u" }, published_at: "2026-01-01" }, "career", DEV, 1);

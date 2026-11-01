@@ -227,7 +227,7 @@ export function App() {
         {activeProfile && !llm?.configured && tab !== "settings" && tab !== "profile" && <LlmSetupGate onGoSettings={() => setTab("settings")} />}
 
         {tab === "profile" && <ProfileTab profiles={profiles} activeProfile={activeProfile} onSelect={(id) => setProfileId(id)} onDone={(id) => { if (id) { setProfileId(id); setTab("search"); } invalidate(); }} />}
-        {llm?.configured && activeProfile && tab === "search" && <SearchTab profile={activeProfile} expansions={(data?.expansions ?? []).filter((x) => x.profileId === activeProfile.id)} llmConfigured={!!llm?.configured} connections={data?.connections ?? []} channels={channels} setChannels={(c) => { channelsTouched.current = true; setChannels(c); }} subs={subs} setSubs={setSubs} recReasons={recReasons} recFit={recFit} openRecs={openRecs} recVenues={recVenues} recMessage={recMessage} runId={runId} setRunId={setRunId} setLastSearch={setLastSearch} result={searchResult} setResult={setSearchResult} onGoSettings={() => setTab("settings")} onDone={() => setTab("results")} flash={flash} invalidate={invalidate} />}
+        {llm?.configured && activeProfile && tab === "search" && <SearchTab profile={activeProfile} expansions={(data?.expansions ?? []).filter((x) => x.profileId === activeProfile.id)} llmConfigured={!!llm?.configured} connections={data?.connections ?? []} channels={channels} setChannels={(c) => { channelsTouched.current = true; setChannels(c); }} subs={subs} setSubs={setSubs} recReasons={recReasons} recFit={recFit} openRecs={openRecs} recVenues={recVenues} recsReady={!!recQ.data} recMessage={recMessage} runId={runId} setRunId={setRunId} setLastSearch={setLastSearch} result={searchResult} setResult={setSearchResult} onGoSettings={() => setTab("settings")} onDone={() => setTab("results")} flash={flash} invalidate={invalidate} />}
         {llm?.configured && activeProfile && tab === "results" && <ResultsTab profile={activeProfile} leads={leads} expansions={(data?.expansions ?? []).filter((x) => x.profileId === activeProfile.id)} llmConfigured={!!llm?.configured} channels={channels} subs={subs} sortByScore={sortByScore} setSortByScore={setSortByScore} lastSearch={lastSearch} setLastSearch={setLastSearch} setRunId={setRunId} flash={flash} invalidate={invalidate} />}
         {llm?.configured && activeProfile && tab === "tracker" && <TrackerTab leads={leads} profile={activeProfile} followups={(data?.followups ?? []).filter((f) => f.profileId === activeProfile.id)} flash={flash} invalidate={invalidate} />}
         {llm?.configured && activeProfile && tab === "cohort" && <CohortTab profile={activeProfile} leads={leads} invites={invites} events={events} summaries={summaries} llmConfigured={!!llm?.configured} posthog={data?.posthog.find((p) => p.profileId === activeProfile.id)} flash={flash} invalidate={invalidate} />}
@@ -310,10 +310,10 @@ function descriptorFor(ch: string): string {
   return CH_DESCRIPTOR[ch] ?? (ch.startsWith("forum:") ? "forum threads" : "public search");
 }
 
-function SearchTab({ profile, expansions, llmConfigured, connections, channels, setChannels, subs, setSubs, recReasons, recFit, openRecs, recVenues, recMessage, runId, setRunId, setLastSearch, result, setResult, onGoSettings, onDone, flash, invalidate }: {
+function SearchTab({ profile, expansions, llmConfigured, connections, channels, setChannels, subs, setSubs, recReasons, recFit, openRecs, recVenues, recsReady, recMessage, runId, setRunId, setLastSearch, result, setResult, onGoSettings, onDone, flash, invalidate }: {
   profile: Profile; expansions: State["expansions"]; llmConfigured: boolean; connections: State["connections"];
   channels: string[]; setChannels: (c: string[] | ((v: string[]) => string[])) => void; subs: string; setSubs: (s: string) => void;
-  recReasons: Record<string, string>; recFit: Record<string, string>; openRecs: { channel: string; label: string; fit: string }[]; recVenues: { name: string; where: string; why: string }[]; recMessage: string; runId: number; setRunId: (id: number) => void;
+  recReasons: Record<string, string>; recFit: Record<string, string>; openRecs: { channel: string; label: string; fit: string }[]; recVenues: { name: string; where: string; why: string }[]; recsReady: boolean; recMessage: string; runId: number; setRunId: (id: number) => void;
   setLastSearch: (s: { found: number; created: number; synthesized: number } | null) => void;
   result: string; setResult: (s: string) => void;
   onGoSettings: () => void; onDone: () => void; flash: (m: string) => void; invalidate: () => void;
@@ -389,8 +389,26 @@ function SearchTab({ profile, expansions, llmConfigured, connections, channels, 
     onError: () => setResult("Search failed — check your connection and try again."),
   });
 
+  const foundExtra = openRecs.filter((o) => o.channel.startsWith("forum:")).length + recVenues.length;
   return (
     <section className="mt-5 space-y-4">
+      <div className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-4">
+        <h2 className="font-serif text-lg font-bold">Discover your channels</h2>
+        <p className="mt-1 text-sm text-[var(--dim)]">Automatic — every profile gets its own channel hunt first. Your profile signals, a live web search for real discussion threads, and Muse's expansion plan each vote on where your people talk. No two profiles search the same places.</p>
+        <ol className="mt-3 space-y-1.5 text-sm">
+          <li><span className="font-semibold">✓ Target locked</span> <span className="text-[var(--dim)]">— {profile.productName}: {profile.productDesc || "no description yet"}</span></li>
+          <li>{recsReady ? (
+            <><span className="font-semibold">✓ Web search</span> <span className="text-[var(--dim)]">— {foundExtra ? `found ${foundExtra} extra place${foundExtra === 1 ? "" : "s"} for this profile beyond the defaults` : "checked the web — the defaults already cover this topic"}</span></>
+          ) : (
+            <><span className="font-semibold">… Web search</span> <span className="text-[var(--dim)]">— searching the web for discussion threads about this pain…</span></>
+          )}</li>
+          <li>{plan && latestExpansion ? (
+            <><span className="font-semibold">✓ Muse plan</span> <span className="text-[var(--dim)]">— round {latestExpansion.round}, anchored to “{plan.anchorTerm}”</span></>
+          ) : (
+            <><span className="font-semibold">… Muse plan</span> <span className="text-[var(--dim)]">— {genPlan.isPending ? "Muse is mapping where else they talk…" : "starts by itself as soon as this tab opens"}</span></>
+          )}</li>
+        </ol>
+      </div>
       <div className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-4">
         <h2 className="font-serif text-lg font-bold">Search</h2>
         <p className="mt-1 text-sm text-[var(--dim)]">Pick the channels, press the button. Search runs on demand across the <strong className="text-[var(--text)]">open channels</strong> — public, searchable, no API needed — then Muse synthesizes every candidate with a verdict, evidence quote and confidence. The matches land on the <strong className="text-[var(--text)]">Results tab</strong>, which opens by itself.</p>
@@ -405,7 +423,6 @@ function SearchTab({ profile, expansions, llmConfigured, connections, channels, 
             ))}
           </div>
           {recMessage && <p className="mt-2 text-xs text-[var(--dim)]">{recMessage} Hover a channel for why.</p>}
-          {!plan && genPlan.isPending && <p role="status" className="mt-2 text-xs font-medium text-[var(--dim)]">Finding where your people talk… channel picks sharpen when Muse's plan lands.</p>}
         </fieldset>
         {poorOpts.length > 0 && !showHidden && (
           <button type="button" className="mt-2 text-xs text-[var(--dim)] underline" onClick={() => setShowHidden(true)}>Show {poorOpts.length} hidden channels</button>
@@ -426,7 +443,7 @@ function SearchTab({ profile, expansions, llmConfigured, connections, channels, 
         {elseTalk.length > 0 && (
           <div className="mt-3 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface-alt)] p-3">
             <h3 className="font-serif text-base font-bold">Where else they talk</h3>
-            <p className="mt-1 text-sm text-[var(--dim)]">Muse found these places for this profile. EarlyProof can't search them — no public API — so join them yourself; anyone promising goes in by hand on the Results tab, and Muse synthesizes them like the rest.</p>
+            <p className="mt-1 text-sm text-[var(--dim)]">Muse's plan and the web search found these places for this profile. EarlyProof can't search them — no public API — so join them yourself. Anyone promising goes in by hand on the Results tab, and Muse synthesizes them like the rest.</p>
             <ul className="mt-2 space-y-1.5 text-sm">
               {elseTalk.map((c, i) => (
                 <li key={i} className="rounded-[var(--radius)] bg-[var(--surface)] px-2.5 py-1.5">
