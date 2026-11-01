@@ -137,6 +137,14 @@ for (const c of GATE_CORPUS) {
   );
 }
 
+// 5b. Founder exclusions veto: the Profile tab promises exclusions keep
+// adjacent noise out of search — a post that keeps without them must drop
+// with a matching one, naming the exclusion.
+const exclPost = "my foundation looks cakey by noon, please help";
+const exclKeep = analyseText(exclPost, MAKEUP);
+const exclDrop = analyseText(exclPost, { ...MAKEUP, exclusions: JSON.stringify(["bridal", "cakey"]) });
+check(exclKeep.keep === true && exclDrop.keep === false && exclDrop.reason.includes("cakey") && exclDrop.reason.includes("exclusion"), "exclusion veto drops anchored posts and names the exclusion", { keep: exclDrop.keep, reason: exclDrop.reason.slice(0, 120) });
+
 // 6. Profile-aware channel recommendations.
 const wRecs = channelRecsFor(WILLOW, null).recs;
 const wAc = wRecs.find((r) => r.channel === "agingcare");

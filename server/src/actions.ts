@@ -183,7 +183,7 @@ function significantTokens(normPhrase: string): string[] {
   return normPhrase.split(" ").filter((w) => w.length > 2 && !STOP_TOKENS.has(w));
 }
 
-type ProfileLike = { productName: string; productDesc: string; audience: string; pain: string; workaround: string; keywords: string; coreAction: string };
+type ProfileLike = { productName: string; productDesc: string; audience: string; pain: string; workaround: string; keywords: string; coreAction: string; exclusions?: string };
 type Relevance = { score: number; reason: string; keep: boolean; matchedTerms: string[]; exactPhrase: string; contextPhrase: string; anchorHits: string[]; anchorPresent: boolean; painSignals: string[]; workaroundSignal: string };
 
 function keywordPhrases(profile: ProfileLike): string[] {
@@ -376,12 +376,24 @@ export function analyseText(rawText: string, profile: ProfileLike, channel?: str
   if (channel === "hackernews" && cluster) score = Math.max(0, score - 8);
 
   score = Math.max(0, Math.min(97, score));
+  // Founder exclusions veto: phrases named (via pain expansion) as proof a
+  // post is NOT this pain filter it out, whatever else matched. The Profile
+  // tab promises exclusions "keep adjacent noise out of search" — this is
+  // where that promise is kept.
+  const exclusionHit = (() => {
+    try {
+      const v = JSON.parse(profile.exclusions || "[]") as unknown;
+      const list = Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
+      return list.map((e) => normText(e)).find((e) => e && containsTerm(text, e)) ?? "";
+    } catch { return ""; }
+  })();
+  if (exclusionHit) parts.push(`matches your exclusion “${exclusionHit}” — not this pain`);
   // THE LIGHT GATE: domain anchor + at least one pain or workaround signal
   // (or an exact/context keyword match), over a low score floor. Anything
   // beyond that — is this really the right person with this pain? — is
   // Muse's call in synthesis, with evidence quote and confidence.
   const hasSignal = hasStrongPainSignal || !!workaroundSignal || !!exactPhrase || !!contextPhrase;
-  const keep = anchorPresent && hasSignal && score >= MIN_SAVE_SCORE;
+  const keep = anchorPresent && hasSignal && score >= MIN_SAVE_SCORE && !exclusionHit;
   const reason = parts.length
     ? parts.join("; ") + "."
     : cluster
