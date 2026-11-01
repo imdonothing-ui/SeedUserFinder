@@ -11,6 +11,9 @@ server/dist/
 
 # App data — the live database holds founder profiles, leads, and the
 # credentials entered in-app. It must never be committed.
+# Local harness build output and data (the harness source itself IS committed).
+local/dist/
+local/data/
 app.db
 app.db-shm
 app.db-wal
