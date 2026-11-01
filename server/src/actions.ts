@@ -618,6 +618,165 @@ type ExpansionPlan = {
   droppedUnanchored: number;
 };
 
+// ─── Web venue discovery (Google-like first step, generalized) ───────────
+// For ANY profile — not just hardcoded verticals: query DuckDuckGo's keyless
+// HTML endpoint with the profile's own anchor + pain phrasing biased toward
+// discussions, group result URLs into venues, and verify unknown forums by
+// fetching their sitemap index. Verified forums become real searchable
+// channels (`forum:<slug>`); Reddit subs and unverifiable discussion places
+// join the join-by-hand venue list; magazine/article domains are dropped —
+// articles are not people talking.
+const DDG_UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36";
+
+export type DdgHit = { url: string; title: string };
+export function ddgResults(html: string): DdgHit[] {
+  const out: DdgHit[] = [];
+  const re = /<a[^>]*class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)<\/a>/gs;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(html)) && out.length < 30) {
+    const raw = m[1] ?? "";
+    const uddg = (raw.match(/uddg=([^&]+)/) || [])[1];
+    let url = "";
+    try { url = decodeURIComponent(uddg || raw); } catch { url = raw; }
+    if (!/^https?:\/\//i.test(url)) continue;
+    const title = decodeHnText(m[2] ?? "").replace(/\s+/g, " ").trim().slice(0, 200);
+    if (!title) continue;
+    out.push({ url, title });
+  }
+  return out;
+}
+
+// Domains whose thread URLs map straight onto registry channels.
+const REGISTRY_DOMAINS: Record<string, string> = {
+  "agingcare.com": "agingcare", "mumsnet.com": "mumsnet",
+  "makeuptalk.com": "makeuptalk", "lipstickalley.com": "lipstickalley",
+  "dev.to": "devto", "lobste.rs": "lobsters",
+  "news.ycombinator.com": "hackernews", "github.com": "github", "bsky.app": "bluesky",
+};
+const DISCUSSION_MARKERS = ["/r/", "/threads/", "/thread/", "/discussion/", "/topic", "/forum", "/chat/", "/community/", "/board", "/showthread", "/viewtopic", "/questions/", "/talk/"];
+export type VenueGroup = { domain: string; key: string; sub?: string; urls: string[]; titles: string[] };
+export function groupVenues(hits: DdgHit[]): VenueGroup[] {
+  const map = new Map<string, VenueGroup>();
+  for (const h of hits) {
+    let u: URL; try { u = new URL(h.url); } catch { continue; }
+    const host = u.hostname.replace(/^www\./, "").toLowerCase();
+    const path = (u.pathname + u.search).toLowerCase();
+    // Reddit communities are venues, not reddit.com.
+    const rm = (host === "reddit.com" || host === "old.reddit.com") ? path.match(/^\/r\/([a-z0-9_]+)/) : null;
+    const key = rm ? `reddit:r/${rm[1]}` : host;
+    const g = map.get(key) ?? { domain: host, key, sub: rm?.[1], urls: [] as string[], titles: [] as string[] };
+    if (!g.urls.includes(h.url)) { g.urls.push(h.url); g.titles.push(h.title); }
+    map.set(key, g);
+  }
+  return [...map.values()];
+}
+
+export type DynamicVenue = { slug: string; label: string; domain: string; index: string; files: string[]; flat: boolean };
+function slugFor(domain: string): string {
+  return domain.replace(/^www\./, "").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+}
+function labelFor(domain: string): string {
+  const base = domain.replace(/^www\./, "").split(".").slice(-2, -1)[0] ?? domain;
+  return base.charAt(0).toUpperCase() + base.slice(1);
+}
+async function verifyForumDomain(domain: string): Promise<DynamicVenue | null> {
+  const cands = [`https://${domain}/sitemap.xml`, `https://${domain}/sitemap.php`, `https://${domain}/sitemap_index.xml`];
+  for (const index of cands) {
+    const r = await fetchText(index);
+    if (!r.ok) continue;
+    if (r.text.includes("<sitemapindex")) {
+      // Sequential index files (XenForo-style) run oldest-first: the last
+      // two are the newest. Title gating at search time keeps strays out.
+      const files = sitemapLocs(r.text, "sitemap").map((e) => e.loc).filter((u) => u !== index);
+      if (!files.length) continue;
+      return { slug: slugFor(domain), label: labelFor(domain), domain, index, files: files.slice(-2), flat: false };
+    }
+    if (r.text.includes("<urlset")) {
+      const urls = sitemapLocs(r.text, "url").map((e) => e.loc);
+      if (urls.length < 20) continue;
+      return { slug: slugFor(domain), label: labelFor(domain), domain, index, files: [], flat: true };
+    }
+  }
+  return null;
+}
+
+export type DiscoveryFindings = {
+  evidence: { channel: string; threads: number }[];
+  dynamic: DynamicVenue[];
+  venues: { name: string; where: string; why: string }[];
+};
+const discoveryCache = new Map<number, { at: number; data: DiscoveryFindings }>();
+export function clearDiscoveryCache(profileId: number) { discoveryCache.delete(profileId); }
+
+function discoveryAnchor(profile: ProfileLike): string {
+  return (activeClusters(profile)[0]?.terms[0])
+    ?? profile.keywords.split(",").map((s) => s.trim()).filter(Boolean)[0]
+    ?? profile.productDesc.trim().split(" ").slice(0, 4).join(" ");
+}
+// One query per discovery: DDG throttles bursts (HTTP 202 challenge page),
+// so a single combined query plus a long cache keeps discovery alive across
+// profiles. Failures (non-200, challenge pages) are never cached.
+const DISCOVERY_TTL_MS = 2 * 60 * 60 * 1000;
+function discoveryQuery(profile: ProfileLike): string {
+  const anchor = discoveryAnchor(profile);
+  const pain = profile.pain.trim() || profile.audience.trim();
+  return `${anchor} ${pain} ${profile.audience.trim()} forum thread discussion`.trim();
+}
+
+export async function discoverVenuesFor(profile: ProfileLike & { id: number }): Promise<DiscoveryFindings> {
+  const hit = discoveryCache.get(profile.id);
+  if (hit && Date.now() - hit.at < DISCOVERY_TTL_MS) return hit.data;
+  const data: DiscoveryFindings = { evidence: [], dynamic: [], venues: [] };
+  const anchor = discoveryAnchor(profile);
+  const page = await fetchText(`https://html.duckduckgo.com/html/?q=${encodeURIComponent(discoveryQuery(profile))}`, { headers: { "User-Agent": DDG_UA } });
+  if (page.status !== 200) return data;
+  const groups = groupVenues(ddgResults(page.text));
+  const verifyTargets: VenueGroup[] = [];
+  for (const g of groups) {
+    const reg = REGISTRY_DOMAINS[g.domain];
+    if (reg) { data.evidence.push({ channel: reg, threads: g.urls.length }); continue; }
+    if (g.sub) {
+      data.venues.push({ name: `r/${g.sub}`, where: "Reddit", why: `Web search found ${g.urls.length} thread${g.urls.length === 1 ? "" : "s"} about '${anchor}' here — no public API, join and add by hand (or connect the Reddit POC).` });
+      continue;
+    }
+    if (g.domain.endsWith(".stackexchange.com") || g.domain === "stackoverflow.com") {
+      data.evidence.push({ channel: "stackexchange", threads: g.urls.length });
+      continue;
+    }
+    const discussionUrls = g.urls.filter((u) => DISCUSSION_MARKERS.some((mk) => u.toLowerCase().includes(mk)));
+    if (!discussionUrls.length) continue; // articles, not people talking — dropped
+    verifyTargets.push(g);
+  }
+  const verified = await Promise.all(verifyTargets.slice(0, 3).map((g) => verifyForumDomain(g.domain)));
+  const verifiedDomains = new Set<string>();
+  for (const v of verified) if (v) { data.dynamic.push(v); verifiedDomains.add(v.domain); }
+  for (const g of verifyTargets) {
+    if (verifiedDomains.has(g.domain) || data.venues.length >= 6) continue;
+    data.venues.push({ name: labelFor(g.domain), where: g.domain, why: `Web search found ${g.urls.length} discussion thread${g.urls.length === 1 ? "" : "s"} about '${anchor}' here — no thread sitemap, join and add by hand.` });
+  }
+  discoveryCache.set(profile.id, { at: Date.now(), data });
+  return data;
+}
+
+// Merge web evidence into static recs (pure, tested): forums with real
+// thread evidence are rescued from poor; article-type channels keep their
+// signal verdict (a Show HN showcase hit proves nothing about seekers).
+const FORUM_CHANNELS = new Set(["agingcare", "mumsnet", "makeuptalk", "lipstickalley"]);
+export function mergeDiscovery<T extends { channel: string; fit: ChannelFit; reasons: string[] }>(recs: T[], findings: DiscoveryFindings): T[] {
+  for (const e of findings.evidence) {
+    const r = recs.find((x) => x.channel === e.channel);
+    if (!r) continue;
+    r.reasons.push(`Web search found ${e.threads} discussion thread${e.threads === 1 ? "" : "s"} here about this pain.`);
+    if (r.fit === "poor" && FORUM_CHANNELS.has(e.channel) && e.threads >= 2) r.fit = "good";
+  }
+  return recs;
+}
+export function sortRecs<T extends { fit: ChannelFit; needsConnection: boolean; reasons: string[] }>(recs: T[]): T[] {
+  const rank: Record<ChannelFit, number> = { best: 0, good: 1, poor: 2 };
+  recs.sort((a, b) => rank[a.fit] - rank[b.fit] || Number(a.needsConnection) - Number(b.needsConnection) || b.reasons.length - a.reasons.length);
+  return recs;
+}
+
 // ─── Profile-aware channel recommendations ────────────────────────────────
 // The app never defaults to the same channels for every product. Signals in
 // the founder's own profile text vote channels up or down, Muse's expansion
@@ -640,7 +799,12 @@ function countSignals(normHaystack: string, signals: string[]): number {
 }
 
 export type ChannelFit = "best" | "good" | "poor";
-export type ChannelRec = { channel: string; fit: ChannelFit; reasons: string[]; needsConnection: boolean };
+export type ChannelRec = { channel: string; label: string; fit: ChannelFit; reasons: string[]; needsConnection: boolean };
+const CHANNEL_LABELS: Record<string, string> = {
+  bluesky: "Bluesky", hackernews: "Hacker News", github: "GitHub", stackexchange: "Stack Exchange",
+  agingcare: "AgingCare", mumsnet: "Mumsnet", makeuptalk: "MakeupTalk", lipstickalley: "Lipstick Alley",
+  devto: "Dev.to", lobsters: "Lobsters", reddit_poc: "Reddit · POC",
+};
 
 export function channelRecsFor(profile: ProfileLike, plan: ExpansionPlan | null): { recs: ChannelRec[] } {
   const hay = normText([profile.productName, profile.productDesc, profile.audience, profile.pain, profile.workaround, profile.keywords, profile.coreAction].join(" "));
@@ -714,15 +878,14 @@ export function channelRecsFor(profile: ProfileLike, plan: ExpansionPlan | null)
     else bump(f.channel, -1, `No ${f.label} threads match this topic — it would search blindly.`);
   }
 
-  const rank: Record<ChannelFit, number> = { best: 0, good: 1, poor: 2 };
   const recs: ChannelRec[] = [...scores.entries()].map(([channel, r]) => ({
     channel,
+    label: CHANNEL_LABELS[channel] ?? channel,
     fit: (r.score >= 2 ? "best" : r.score < 0 ? "poor" : "good") as ChannelFit,
     reasons: r.reasons.length ? r.reasons : ["Named by your expansion plan."],
-    needsConnection: !OPEN_SEARCH_CHANNELS.includes(channel),
+    needsConnection: !OPEN_SEARCH_CHANNELS.includes(channel) && !channel.startsWith("forum:"),
   }));
-  recs.sort((a, b) => rank[a.fit] - rank[b.fit] || Number(a.needsConnection) - Number(b.needsConnection) || b.reasons.length - a.reasons.length);
-  return { recs };
+  return { recs: sortRecs(recs) };
 }
 
 // Stack Exchange per-profile site mapping (cap 2): the shared keyless quota
@@ -957,7 +1120,10 @@ const SITEMAP_MAX_ENTRIES = 60000;
 async function fetchSitemapEntries(forum: SitemapForum, profile: ProfileLike): Promise<{ entries: SitemapEntry[] } | { error: string }> {
   const idx0 = await fetchText(forum.index);
   if (!idx0.ok) return { error: `Sitemap index unreachable (HTTP ${idx0.status}).` };
-  const level0 = filterSitemapLocs(forum, sitemapLocs(idx0.text, "sitemap").map((e) => e.loc), profile);
+  let level0 = filterSitemapLocs(forum, sitemapLocs(idx0.text, "sitemap").map((e) => e.loc), profile);
+  // Flat sitemap (no index — the file itself lists threads, as discovered
+  // for small forums): search the file itself instead of sections.
+  if (!level0.length && idx0.text.includes("<urlset")) level0 = [forum.index];
   if (!level0.length) return { error: "No sitemap sections match this profile's topic — skipped instead of searching blindly." };
   // Cache key includes the section selection: different profiles legitimately
   // fetch different topic slices of the same forum.
@@ -972,9 +1138,11 @@ async function fetchSitemapEntries(forum: SitemapForum, profile: ProfileLike): P
   // Detection is by content (<sitemapindex> vs <urlset>), never assumed.
   for (let depth = 0; depth < 2 && level.length && entries.length < SITEMAP_MAX_ENTRIES; depth++) {
     const next: string[] = [];
+    const seen = new Set<string>();
     for (const loc of level) {
       if (fetches >= forum.maxFiles || entries.length >= SITEMAP_MAX_ENTRIES) break;
-      if (loc === forum.index) continue;
+      if (seen.has(loc)) continue;
+      seen.add(loc);
       const r = await fetchText(loc);
       fetches++;
       if (!r.ok) continue; // one bad file doesn't sink the channel
@@ -995,6 +1163,19 @@ async function fetchSitemapEntries(forum: SitemapForum, profile: ProfileLike): P
   if (!entries.length) return { error: "Sitemap files yielded no thread titles." };
   sitemapCache.set(cacheKey, { at: Date.now(), entries });
   return { entries };
+}
+// A web-discovered venue as a searchable forum object: exact file tokens
+// (verified minutes ago), no topic mapping needed — verification IS the map.
+export function dynamicForumFor(channel: string, findings: DiscoveryFindings): SitemapForum | null {
+  const slug = channel.slice("forum:".length);
+  const d = findings.dynamic.find((v) => v.slug === slug);
+  if (!d) return null;
+  return {
+    channel, label: d.label, index: d.index,
+    sections: d.flat ? [{ token: d.index, signals: null }] : d.files.map((f) => ({ token: f, signals: null })),
+    communityFor: () => d.label,
+    core: [], kin: [], minScore: 0, maxFiles: 2,
+  };
 }
 export function sitemapCandidate(entry: SitemapEntry, forum: SitemapForum, profile: ProfileLike, profileId: number): { key: string; values: typeof schema.leads.$inferInsert; s: Relevance } | null {
   if (!entry.title) return null;
@@ -1279,14 +1460,26 @@ async function runChannelSearch(
           }
         }
       }
-    } else if (SITEMAP_FORUMS.some((f) => f.channel === ch)) {
+    } else if (SITEMAP_FORUMS.some((f) => f.channel === ch) || ch.startsWith("forum:")) {
       // Sitemap-indexed forums: no API, no RSS, bot-disallowed /search — but
       // public sitemaps with thread titles in the slugs. Scored title-only;
       // the candidate reason says so, and the founder verifies by opening
       // the thread. Skipped (never blind) when no forum maps to the profile.
-      const forums = sitemapForumsFor(profile).filter((f) => f.channel === ch);
-      const label = SITEMAP_FORUMS.find((f) => f.channel === ch)?.label ?? ch;
-      if (!forums.length) { errors.push({ channel: label, message: "No sitemap-indexed forum matches this profile's topic — skipped instead of searching blindly." }); continue; }
+      // `forum:<slug>` channels are web-discovered venues, resolved through
+      // the discovery cache (re-discovered on a cold cache).
+      let forums: SitemapForum[];
+      let label: string;
+      if (ch.startsWith("forum:")) {
+        let findings: DiscoveryFindings | null = null;
+        try { findings = await discoverVenuesFor(profile); } catch { findings = null; }
+        const dyn = findings ? dynamicForumFor(ch, findings) : null;
+        if (!dyn) { errors.push({ channel: ch, message: "This discovered venue is no longer verified — reload the Search tab to re-run channel discovery." }); continue; }
+        forums = [dyn]; label = dyn.label;
+      } else {
+        forums = sitemapForumsFor(profile).filter((f) => f.channel === ch);
+        label = SITEMAP_FORUMS.find((f) => f.channel === ch)?.label ?? ch;
+        if (!forums.length) { errors.push({ channel: label, message: "No sitemap-indexed forum matches this profile's topic — skipped instead of searching blindly." }); continue; }
+      }
       for (const forum of forums) {
         const r = await fetchSitemapEntries(forum, profile);
         if ("error" in r) { errors.push({ channel: forum.label, message: r.error }); continue; }
@@ -1560,6 +1753,7 @@ export const Actions = {
     async handler(ctx, args) {
       const db = ctx.db<typeof schema>();
       await db.update(schema.profiles).set({ productName: args.productName, productDesc: args.productDesc, audience: args.audience, pain: args.pain, workaround: args.workaround, keywords: args.keywords, coreAction: args.coreAction }).where(eq(schema.profiles.id, args.id));
+      clearDiscoveryCache(args.id);
       ctx.invalidateQueries();
       return { ok: true };
     },
@@ -1763,12 +1957,12 @@ export const Actions = {
   // non-technical profile.
   recommendChannels: defineAction({
     request: z.object({ profileId: z.number() }),
-    response: z.object({ status: z.string(), message: z.string(), basedOn: z.string(), recs: z.array(z.object({ channel: z.string(), fit: z.string(), reasons: z.array(z.string()), needsConnection: z.boolean() })) }),
+    response: z.object({ status: z.string(), message: z.string(), basedOn: z.string(), recs: z.array(z.object({ channel: z.string(), label: z.string(), fit: z.string(), reasons: z.array(z.string()), needsConnection: z.boolean() })), venues: z.array(z.object({ name: z.string(), where: z.string(), why: z.string() })) }),
     async handler(ctx, args) {
       const db = ctx.db<typeof schema>();
       const profRows = await db.select().from(schema.profiles).where(eq(schema.profiles.id, args.profileId));
       const profile = profRows[0];
-      if (!profile) return { status: "error", message: "Profile not found.", basedOn: "", recs: [] };
+      if (!profile) return { status: "error", message: "Profile not found.", basedOn: "", recs: [], venues: [] };
       const existing = await db.select().from(schema.searchExpansions).where(eq(schema.searchExpansions.profileId, profile.id));
       const latest = existing.sort((a, b) => b.round - a.round)[0];
       let plan: ExpansionPlan | null = null;
@@ -1783,8 +1977,23 @@ export const Actions = {
         } catch { /* heuristic-only */ }
       }
       const { recs } = channelRecsFor(profile, plan);
-      const tops = recs.filter((r) => r.fit === "best" && !r.needsConnection).map((r) => r.channel);
-      const poors = recs.filter((r) => r.fit === "poor" && !r.needsConnection).map((r) => r.channel);
+      // Web venue discovery runs for every profile (cached 2h, one query): real
+      // discussion threads found by search merge into the static recs, and
+      // verified new forums join the lineup as `forum:<slug>` channels. A
+      // failed discovery degrades to static recs — never an error.
+      let venues: { name: string; where: string; why: string }[] = [];
+      try {
+        const found = await discoverVenuesFor(profile);
+        mergeDiscovery(recs, found);
+        for (const d of found.dynamic) {
+          if (recs.some((r) => r.channel === `forum:${d.slug}`)) continue;
+          recs.push({ channel: `forum:${d.slug}`, label: d.label, fit: "good", reasons: [`Web search verified ${d.label} threads about this pain (thread sitemap readable) — keyless title search.`], needsConnection: false });
+        }
+        sortRecs(recs);
+        venues = found.venues.slice(0, 6);
+      } catch { /* static recs stand alone */ }
+      const tops = recs.filter((r) => r.fit === "best" && !r.needsConnection).map((r) => r.label);
+      const poors = recs.filter((r) => r.fit === "poor" && !r.needsConnection).map((r) => r.label);
       return {
         status: "ok",
         message: tops.length
@@ -1794,6 +2003,7 @@ export const Actions = {
             : `No channel stands out for this profile (${basedOn}) — all open channels stay selected.`,
         basedOn,
         recs,
+        venues,
       };
     },
   }),

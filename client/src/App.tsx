@@ -158,7 +158,13 @@ export function App() {
   }, [recQ.data, recsAppliedKey]);
   const recReasons: Record<string, string> = {};
   const recFit: Record<string, string> = {};
-  for (const r of recQ.data?.recs ?? []) { recReasons[r.channel] = r.reasons.join(" · "); recFit[r.channel] = r.fit; }
+  const openRecs: { channel: string; label: string; fit: string }[] = [];
+  for (const r of recQ.data?.recs ?? []) {
+    recReasons[r.channel] = r.reasons.join(" · ");
+    recFit[r.channel] = r.fit;
+    if (!r.needsConnection) openRecs.push({ channel: r.channel, label: r.label, fit: r.fit });
+  }
+  const recVenues: { name: string; where: string; why: string }[] = recQ.data?.venues ?? [];
   const recMessage = recQ.data?.status === "ok" ? recQ.data.message : "";
 
   // Recs read the latest expansion plan, so anything that can create a plan
@@ -221,7 +227,7 @@ export function App() {
         {activeProfile && !llm?.configured && tab !== "settings" && tab !== "profile" && <LlmSetupGate onGoSettings={() => setTab("settings")} />}
 
         {tab === "profile" && <ProfileTab profiles={profiles} activeProfile={activeProfile} onSelect={(id) => setProfileId(id)} onDone={(id) => { if (id) { setProfileId(id); setTab("search"); } invalidate(); }} />}
-        {llm?.configured && activeProfile && tab === "search" && <SearchTab profile={activeProfile} expansions={(data?.expansions ?? []).filter((x) => x.profileId === activeProfile.id)} llmConfigured={!!llm?.configured} connections={data?.connections ?? []} channels={channels} setChannels={(c) => { channelsTouched.current = true; setChannels(c); }} subs={subs} setSubs={setSubs} recReasons={recReasons} recFit={recFit} recMessage={recMessage} runId={runId} setRunId={setRunId} setLastSearch={setLastSearch} result={searchResult} setResult={setSearchResult} onGoSettings={() => setTab("settings")} onDone={() => setTab("results")} flash={flash} invalidate={invalidate} />}
+        {llm?.configured && activeProfile && tab === "search" && <SearchTab profile={activeProfile} expansions={(data?.expansions ?? []).filter((x) => x.profileId === activeProfile.id)} llmConfigured={!!llm?.configured} connections={data?.connections ?? []} channels={channels} setChannels={(c) => { channelsTouched.current = true; setChannels(c); }} subs={subs} setSubs={setSubs} recReasons={recReasons} recFit={recFit} openRecs={openRecs} recVenues={recVenues} recMessage={recMessage} runId={runId} setRunId={setRunId} setLastSearch={setLastSearch} result={searchResult} setResult={setSearchResult} onGoSettings={() => setTab("settings")} onDone={() => setTab("results")} flash={flash} invalidate={invalidate} />}
         {llm?.configured && activeProfile && tab === "results" && <ResultsTab profile={activeProfile} leads={leads} expansions={(data?.expansions ?? []).filter((x) => x.profileId === activeProfile.id)} llmConfigured={!!llm?.configured} channels={channels} subs={subs} sortByScore={sortByScore} setSortByScore={setSortByScore} lastSearch={lastSearch} setLastSearch={setLastSearch} setRunId={setRunId} flash={flash} invalidate={invalidate} />}
         {llm?.configured && activeProfile && tab === "tracker" && <TrackerTab leads={leads} profile={activeProfile} followups={(data?.followups ?? []).filter((f) => f.profileId === activeProfile.id)} flash={flash} invalidate={invalidate} />}
         {llm?.configured && activeProfile && tab === "cohort" && <CohortTab profile={activeProfile} leads={leads} invites={invites} events={events} summaries={summaries} llmConfigured={!!llm?.configured} posthog={data?.posthog.find((p) => p.profileId === activeProfile.id)} flash={flash} invalidate={invalidate} />}
@@ -295,10 +301,19 @@ function ProfileTab({ profiles, activeProfile, onSelect, onDone }: { profiles: P
    work. Matches appear on the Results tab, which opens automatically. */
 const OPEN_OPTS: [string, string][] = [["bluesky", "Bluesky · public search"], ["hackernews", "Hacker News · public search"], ["github", "GitHub · public search"], ["stackexchange", "Stack Exchange · public Q&A"], ["agingcare", "AgingCare · forum threads"], ["mumsnet", "Mumsnet · forum threads"], ["makeuptalk", "MakeupTalk · forum threads"], ["lipstickalley", "Lipstick Alley · forum threads"], ["devto", "Dev.to · articles"], ["lobsters", "Lobsters · dev discussion"]];
 
-function SearchTab({ profile, expansions, llmConfigured, connections, channels, setChannels, subs, setSubs, recReasons, recFit, recMessage, runId, setRunId, setLastSearch, result, setResult, onGoSettings, onDone, flash, invalidate }: {
+const CH_DESCRIPTOR: Record<string, string> = {
+  bluesky: "public search", hackernews: "public search", github: "public search",
+  stackexchange: "public Q&A", agingcare: "forum threads", mumsnet: "forum threads",
+  makeuptalk: "forum threads", lipstickalley: "forum threads", devto: "articles", lobsters: "dev discussion",
+};
+function descriptorFor(ch: string): string {
+  return CH_DESCRIPTOR[ch] ?? (ch.startsWith("forum:") ? "forum threads" : "public search");
+}
+
+function SearchTab({ profile, expansions, llmConfigured, connections, channels, setChannels, subs, setSubs, recReasons, recFit, openRecs, recVenues, recMessage, runId, setRunId, setLastSearch, result, setResult, onGoSettings, onDone, flash, invalidate }: {
   profile: Profile; expansions: State["expansions"]; llmConfigured: boolean; connections: State["connections"];
   channels: string[]; setChannels: (c: string[] | ((v: string[]) => string[])) => void; subs: string; setSubs: (s: string) => void;
-  recReasons: Record<string, string>; recFit: Record<string, string>; recMessage: string; runId: number; setRunId: (id: number) => void;
+  recReasons: Record<string, string>; recFit: Record<string, string>; openRecs: { channel: string; label: string; fit: string }[]; recVenues: { name: string; where: string; why: string }[]; recMessage: string; runId: number; setRunId: (id: number) => void;
   setLastSearch: (s: { found: number; created: number; synthesized: number } | null) => void;
   result: string; setResult: (s: string) => void;
   onGoSettings: () => void; onDone: () => void; flash: (m: string) => void; invalidate: () => void;
@@ -310,7 +325,6 @@ function SearchTab({ profile, expansions, llmConfigured, connections, channels, 
   // Irrelevant channels are hidden, not displayed — one quiet line reveals
   // them for override. Channels searchable right now:
   const EXECUTABLE = new Set(["bluesky", "hackernews", "github", "stackexchange", "agingcare", "mumsnet", "makeuptalk", "lipstickalley", "devto", "lobsters"]);
-  const poorOpts = OPEN_OPTS.filter(([v]) => recFit[v] === "poor");
   const [showHidden, setShowHidden] = useState(false);
   useEffect(() => { setShowHidden(false); }, [profile.id]);
   // Search-run progress: the server records real phases per run; the latest
@@ -319,17 +333,33 @@ function SearchTab({ profile, expansions, llmConfigured, connections, channels, 
   const redditConnected = !!connections.find((c) => c.channel === "reddit_poc")?.connected;
   const latestExpansion = [...expansions].sort((a, b) => b.round - a.round)[0];
   const plan: ExpansionPlanData | null = latestExpansion ? parsePlan(latestExpansion.plan) : null;
-  // Muse's plan also names places EarlyProof cannot search (subreddits,
-  // Discords, hashtags): shown as venues to join by hand, never as channels.
+  // Pills come from the server lineup (dynamic `forum:` ids included); before
+  // recs land, the static defaults stand in.
+  const lineup = openRecs.length
+    ? openRecs.map((r) => ({ channel: r.channel, label: `${r.label} · ${descriptorFor(r.channel)}`, fit: r.fit }))
+    : OPEN_OPTS.map(([v, label]) => ({ channel: v, label, fit: recFit[v] as string | undefined }));
+  const shownOpts = lineup.filter((o) => o.fit !== "poor");
+  const poorOpts = lineup.filter((o) => o.fit === "poor");
+  // Muse's plan plus web discovery name places EarlyProof cannot search
+  // (subreddits, Discords, hashtags): shown as venues to join by hand,
+  // never as channels.
   const elseTalk = (() => {
     const seen = new Set<string>();
-    return (plan?.communities ?? []).filter((c) => {
-      if (!c.name || EXECUTABLE.has(c.channel) || channels.includes(c.channel)) return false;
-      const k = c.name.toLowerCase();
-      if (seen.has(k)) return false;
+    const out: { name: string; where: string; why: string; access: string }[] = [];
+    for (const c of plan?.communities ?? []) {
+      if (!c.name || EXECUTABLE.has(c.channel) || channels.includes(c.channel)) continue;
+      const k = `${c.name} ${c.where || ""}`.toLowerCase();
+      if (seen.has(k)) continue;
       seen.add(k);
-      return true;
-    });
+      out.push({ name: c.name, where: c.where || "", why: c.why || "", access: c.access || "" });
+    }
+    for (const v of recVenues) {
+      const k = `${v.name} ${v.where}`.toLowerCase();
+      if (seen.has(k)) continue;
+      seen.add(k);
+      out.push({ name: v.name, where: v.where, why: v.why, access: "manual" });
+    }
+    return out;
   })();
   const genPlan = useMutation({
     mutationFn: () => api.generateExpansionPlan({ profileId: profile.id }),
@@ -367,10 +397,10 @@ function SearchTab({ profile, expansions, llmConfigured, connections, channels, 
         <fieldset className="mt-3">
           <legend className={labelCls}>Open channels — picked for this profile, toggle freely</legend>
           <div className="flex flex-wrap gap-2">
-            {OPEN_OPTS.filter(([v]) => recFit[v] !== "poor").map(([v, label]) => (
-              <label key={v} title={recReasons[v] ?? label} className={`flex cursor-pointer items-center gap-2 rounded-full border px-3 py-1.5 text-sm ${channels.includes(v) ? "border-[var(--accent)] bg-[var(--accent-bg)] font-semibold" : "border-[var(--border)]"}`}>
-                <input type="checkbox" aria-label={label} checked={channels.includes(v)} onChange={() => toggle(v)} />{label}
-                {NEW_CHANNELS.has(v) && <span className="rounded-full bg-[var(--accent)] px-1.5 py-0.5 text-[10px] font-bold text-[var(--accent-text)]">New</span>}
+            {shownOpts.map((o) => (
+              <label key={o.channel} title={recReasons[o.channel] ?? o.label} className={`flex cursor-pointer items-center gap-2 rounded-full border px-3 py-1.5 text-sm ${channels.includes(o.channel) ? "border-[var(--accent)] bg-[var(--accent-bg)] font-semibold" : "border-[var(--border)]"}`}>
+                <input type="checkbox" aria-label={o.label} checked={channels.includes(o.channel)} onChange={() => toggle(o.channel)} />{o.label}
+                {NEW_CHANNELS.has(o.channel) && <span className="rounded-full bg-[var(--accent)] px-1.5 py-0.5 text-[10px] font-bold text-[var(--accent-text)]">New</span>}
               </label>
             ))}
           </div>
@@ -382,12 +412,12 @@ function SearchTab({ profile, expansions, llmConfigured, connections, channels, 
         )}
         {showHidden && (
           <div className="mt-2 space-y-1.5 rounded-[var(--radius)] border border-dashed border-[var(--border)] p-2 text-sm">
-            {poorOpts.map(([v, label]) => (
-              <div key={v} className="flex flex-wrap items-center gap-2">
+            {poorOpts.map((o) => (
+              <div key={o.channel} className="flex flex-wrap items-center gap-2">
                 <label className="flex cursor-pointer items-center gap-2 rounded-full border border-[var(--border)] px-3 py-1.5 text-sm">
-                  <input type="checkbox" aria-label={label} checked={channels.includes(v)} onChange={() => toggle(v)} />{label}
+                  <input type="checkbox" aria-label={o.label} checked={channels.includes(o.channel)} onChange={() => toggle(o.channel)} />{o.label}
                 </label>
-                <span className="text-xs text-[var(--dim)]">{recReasons[v]}</span>
+                <span className="text-xs text-[var(--dim)]">{recReasons[o.channel]}</span>
               </div>
             ))}
             <button type="button" className="text-xs text-[var(--dim)] underline" onClick={() => setShowHidden(false)}>Hide again</button>

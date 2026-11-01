@@ -7,7 +7,7 @@ import { Database } from "bun:sqlite";
 import { eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/bun-sqlite";
 import { complete } from "./inference-stub.ts";
-import { Actions, analyseText, shouldRetryFetch, matchVariant, synonymsFor, sitemapLocs, slugTitleFor, sitemapForumsFor, filterSitemapLocs, sitemapCandidate, channelRecsFor, stackSitesFor, seCandidate, devtoTagsFor, lobstersFor, devtoCandidate, lobstersCandidate } from "../server/src/actions.ts";
+import { Actions, analyseText, shouldRetryFetch, matchVariant, synonymsFor, sitemapLocs, slugTitleFor, sitemapForumsFor, filterSitemapLocs, sitemapCandidate, channelRecsFor, stackSitesFor, seCandidate, devtoTagsFor, lobstersFor, devtoCandidate, lobstersCandidate, ddgResults, groupVenues, mergeDiscovery, dynamicForumFor } from "../server/src/actions.ts";
 import { META_MODEL, buildResponsesRequest, extractJsonValue, isDirectKey, completeViaMetaModel } from "../server/src/meta-api.ts";
 import { GATE_CORPUS, WILLOW, SECONDHIFT, DEV, MAKEUP, DAWNLITE } from "./gate-corpus.ts";
 import * as schema from "../server/src/schema.ts";
@@ -167,6 +167,18 @@ check(!!dRecs2.find((r) => r.channel === "devto" && r.fit !== "poor") && !!dRecs
 // on signals alone, but a Muse plan mapping a community there rescues it.
 const planVote = channelRecsFor(MAKEUP, { communities: [{ name: "r/MakeupAddiction", where: "Reddit", channel: "stackexchange", access: "open", why: "test" }] } as any).recs;
 check(!!planVote.find((r) => r.channel === "stackexchange" && r.fit !== "poor"), "plan community vote rescues a poor channel", null);
+// Web venue discovery (pure parts, fixture HTML — no network): parse,
+// group by venue, merge evidence, build dynamic forum objects.
+const DDG_HTML = `<a rel="nofollow" class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fwww.reddit.com%2Fr%2FMakeupAddiction%2Fcomments%2Fabc%2Fx&amp;rut=1">Foundation cakey?</a><a rel="nofollow" class="result__a" href="https://www.byrdie.com/fix-cakey">Fix cakey makeup</a><a rel="nofollow" class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fwww.reddit.com%2Fr%2Fbeauty%2Fcomments%2Fdef%2Fy&amp;rut=2">Help</a>`;
+const ddgHits = ddgResults(DDG_HTML);
+check(ddgHits.length === 3 && ddgHits[0].url === "https://www.reddit.com/r/MakeupAddiction/comments/abc/x" && ddgHits[1].url === "https://www.byrdie.com/fix-cakey", "ddg results decode uddg + direct links", ddgHits);
+const venues = groupVenues(ddgHits);
+check(venues.length === 3 && !!venues.find((v) => v.key === "reddit:r/makeupaddiction" && v.urls.length === 1) && !!venues.find((v) => v.key === "reddit:r/beauty"), "venues group reddit subs separately from article domains", venues.map((v) => v.key));
+const mgRecs = [{ channel: "mumsnet", fit: "poor", reasons: ["a"] }, { channel: "hackernews", fit: "poor", reasons: ["b"] }] as any;
+mergeDiscovery(mgRecs, { evidence: [{ channel: "mumsnet", threads: 2 }, { channel: "hackernews", threads: 5 }], dynamic: [], venues: [] });
+check(mgRecs[0].fit === "good" && mgRecs[0].reasons.length === 2 && mgRecs[1].fit === "poor" && mgRecs[1].reasons.length === 2, "merge rescues poor forums with thread evidence, never HN showcases", mgRecs);
+const dynForum = dynamicForumFor("forum:alz-org", { evidence: [], dynamic: [{ slug: "alz-org", label: "Alzconnected", domain: "alzconnected.org", index: "https://alzconnected.org/sitemap.xml", files: ["https://alzconnected.org/sitemap-2.xml"], flat: false }], venues: [] });
+check(!!dynForum && dynForum.channel === "forum:alz-org" && dynForum.label === "Alzconnected" && (dynForum.sections[0] as any).token === "https://alzconnected.org/sitemap-2.xml" && dynamicForumFor("forum:nope", { evidence: [], dynamic: [], venues: [] }) === null, "dynamic forum object carries exact verified file tokens; unknown slug misses", dynForum);
 const dtCand = devtoCandidate({ id: 1, title: "t", description: "d", url: "https://dev.to/x", user: { username: "u" }, published_at: "2026-01-01" }, "career", DEV, 1);
 const loCand = lobstersCandidate({ short_id: "abc", title: "t", description_plain: "d", comments_url: "https://lobste.rs/s/abc", submitter_user: "u", created_at: "2026-01-01", tags: ["a", "b"] }, DEV, 1);
 check(!!dtCand && dtCand.values.channel === "devto" && !!loCand && loCand.values.channel === "lobsters" && String(loCand.values.community).includes("a"), "devto/lobsters candidate builders shape leads", null);
