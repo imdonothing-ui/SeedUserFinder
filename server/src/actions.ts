@@ -2210,7 +2210,7 @@ export const Actions = {
 
       if (lead.channel === "bluesky") {
         const sess = await ensureBsky(ctx);
-        if (!sess) return { posted: false, postedUrl: "", message: "Bluesky is not connected. This draft is saved as Approved — connect Bluesky in Channels to post it from here, or copy it and reply manually." };
+        if (!sess) return { posted: false, postedUrl: "", message: "Marked Approved. Want EarlyProof to send it for you? Connect Bluesky in Settings → Channels (free account + app password — never your main password), then tap Approve & post again and it replies from your account. Or copy the draft, reply manually, then tap “Mark sent”." };
         if (!lead.externalUri || !lead.externalCid) return { posted: false, postedUrl: "", message: "This lead has no Bluesky post reference to reply to. Copy the draft and reply manually." };
         const record = { $type: "app.bsky.feed.post", text: lead.draftBody.slice(0, 300), createdAt: new Date().toISOString(), reply: { root: { uri: lead.externalUri, cid: lead.externalCid }, parent: { uri: lead.externalUri, cid: lead.externalCid } } };
         const r = await fetchJson("https://bsky.social/xrpc/com.atproto.repo.createRecord", { method: "POST", headers: { Authorization: `Bearer ${sess.accessJwt}`, "Content-Type": "application/json" }, body: JSON.stringify({ repo: sess.did, collection: "app.bsky.feed.post", record }) });
@@ -2230,7 +2230,7 @@ export const Actions = {
         if (!pat || !m) {
           await db.update(schema.leads).set({ status: "approved", updatedAt: new Date() }).where(eq(schema.leads.id, lead.id));
           ctx.invalidateQueries();
-          return { posted: false, postedUrl: "", message: "Marked Approved. Connect a GitHub token in Channels to post comments from here, or copy the draft and comment on the issue yourself." };
+          return { posted: false, postedUrl: "", message: "Marked Approved. Want it posted for you? Add a fine-grained token (Issues read/write) in Settings → Channels, then tap Approve & post again. Or copy the draft and comment on the issue yourself, then tap “Mark sent”." };
         }
         const r = await fetchJson(`https://api.github.com/repos/${m[1]}/${m[2]}/issues/${m[3]}/comments`, { method: "POST", headers: { Authorization: `Bearer ${pat}`, Accept: "application/vnd.github+json", "Content-Type": "application/json" }, body: JSON.stringify({ body: lead.draftBody }) });
         if (!r.ok) return { posted: false, postedUrl: "", message: `GitHub comment failed (HTTP ${r.status}). The draft stays Approved — check your token's Issues permission.` };
@@ -2246,7 +2246,7 @@ export const Actions = {
         if ("error" in sess) {
           await db.update(schema.leads).set({ status: "approved", updatedAt: new Date() }).where(eq(schema.leads.id, lead.id));
           ctx.invalidateQueries();
-          return { posted: false, postedUrl: "", message: "Marked Approved (POC). Reddit POC is not connected, so copy the draft and reply manually — or reconnect the POC in Channels." };
+          return { posted: false, postedUrl: "", message: "Marked Approved (POC). Want the reply sent for you? Reconnect the Reddit POC in Settings → Channels, then tap Approve & post again. Or copy the draft and reply manually, then tap “Mark sent”." };
         }
         if (!lead.externalId.startsWith("t3_") && !lead.externalId.startsWith("t1_")) {
           await db.update(schema.leads).set({ status: "approved", updatedAt: new Date() }).where(eq(schema.leads.id, lead.id));
@@ -2267,11 +2267,20 @@ export const Actions = {
         return { posted: true, postedUrl: url, message: "Reply posted via the Reddit POC connector from your own account (free non-commercial tier — POC validation only)." };
       }
 
-      // All other channels: founder sends manually.
+      // All other channels: founder sends manually — there is no connection
+      // path to offer (no posting API, or it needs a personal login EarlyProof
+      // must never hold), so no ask, just the honest reason and the manual loop.
       await db.update(schema.leads).set({ status: "approved", updatedAt: new Date() }).where(eq(schema.leads.id, lead.id));
       ctx.invalidateQueries();
-      const label = lead.channel === "hackernews" ? "Hacker News has no posting API" : lead.channel === "reddit" || lead.channel === "x" ? "This channel uses your pasted link (no paid API)" : "This is a closed/DM channel";
-      return { posted: false, postedUrl: "", message: `Marked Approved — ready for you to send. ${label}, so copy the draft, send it from your own account, then tap “Mark sent”.` };
+      const ch = lead.channel;
+      const reason = ch === "hackernews" ? "Hacker News has no posting API"
+        : ch === "devto" ? "Dev.to's API blocks automated comments"
+        : ch === "lobsters" ? "Lobsters needs its own logged-in account"
+        : ch === "stackexchange" ? "Stack Exchange answers need your own logged-in account with reputation"
+        : ch === "reddit" || ch === "x" ? "This channel uses your pasted link (no paid API)"
+        : ["agingcare", "mumsnet", "makeuptalk", "lipstickalley"].includes(ch) || ch.startsWith("forum:") ? "Forums need your own personal login — EarlyProof can't post as you there"
+        : "This is a closed/DM channel";
+      return { posted: false, postedUrl: "", message: `Marked Approved — ready for you to send. ${reason}, so copy the draft, send it from your own account, then tap “Mark sent”.` };
     },
   }),
 

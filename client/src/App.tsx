@@ -1112,7 +1112,7 @@ function ChannelsTab({ connections, profile, insights, llmConfigured, flash, inv
     <section className="mt-5 space-y-4">
       <div>
         <h2 className="font-serif text-lg font-bold">Channels — three honest modes</h2>
-        <p className="text-sm text-[var(--dim)]">Step 3 searches all <strong className="text-[var(--text)]">open channels</strong> (Bluesky public search, Hacker News, GitHub public search, Stack Exchange public Q&A, AgingCare forum threads, Mumsnet forum threads) by default — no connection needed here for those. <strong className="text-[var(--text)]">Closed channels</strong> join the search only after you provide their API or account connection on this page; leaving one unconnected never blocks the open-channel search. Live channels post only after you approve the exact draft. Closed communities without a search API are guided — you join and send. Reviews are insight only, never outreach.</p>
+        <p className="text-sm text-[var(--dim)]">Search runs across the <strong className="text-[var(--text)]">open channels</strong> your profile maps to (Bluesky, Hacker News, GitHub, Stack Exchange, caregiver and parenting forums, beauty forums, Dev.to, Lobsters, plus any web-discovered forum) by default — no connection needed here for those. <strong className="text-[var(--text)]">Closed channels</strong> join the search only after you provide their API or account connection on this page; leaving one unconnected never blocks the open-channel search. Live channels post only after you approve the exact draft. Closed communities without a search API are guided — you join and send. Reviews are insight only, never outreach.</p>
       </div>
 
       {/* Bluesky */}
