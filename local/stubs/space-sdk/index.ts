@@ -9,7 +9,9 @@ import { z } from "zod";
 export { z };
 
 export type Ctx = {
-  db<T>(): T;
+  // The host returns a drizzle query builder over the app schema, so rows
+  // stay typed at every call site (as with the real SDK).
+  db<T extends Record<string, unknown>>(): import("drizzle-orm/bun-sqlite").BunSQLiteDatabase<T>;
   inference: {
     complete<T>(prompt: string, opts: { schema: z.ZodType<T, any, any> }): Promise<T>;
   };

@@ -15,11 +15,11 @@ export function SafeAreaTopScrim(_props: { backgroundColor?: string }): ReactNod
 type AnyAction = {
   request: z.ZodTypeAny;
   response: z.ZodTypeAny;
-  handler: (...args: never[]) => unknown;
+  handler: (ctx: any, args: any) => any;
 };
 
-export type ApiRequest<A extends Record<string, AnyAction>, K extends keyof A> = z.input<A[K]["request"]>;
-export type ApiResponse<A extends Record<string, AnyAction>, K extends keyof A> = z.output<A[K]["response"]>;
+export type ApiRequest<A, K extends keyof A> = A[K] extends (args: infer I) => unknown ? I : never;
+export type ApiResponse<A, K extends keyof A> = A[K] extends (args: any) => Promise<infer O> ? O : never;
 
 export function createActionClient<A extends Record<string, AnyAction>>(): {
   [K in keyof A]: (args: z.input<A[K]["request"]>) => Promise<z.output<A[K]["response"]>>;

@@ -1,5 +1,6 @@
-import { useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Bar, BarChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { SafeAreaTopScrim } from "@hatch/space-sdk/client";
 import { api, type ApiResponse } from "./api";
 
@@ -24,10 +25,12 @@ function parsePlan(s: string): ExpansionPlanData {
 }
 
 const CHANNEL_LABEL: Record<string, string> = {
-  bluesky: "Bluesky", hackernews: "Hacker News", github: "GitHub", reddit_poc: "Reddit · POC",
+  bluesky: "Bluesky", hackernews: "Hacker News", github: "GitHub", stackexchange: "Stack Exchange",
+  agingcare: "AgingCare", mumsnet: "Mumsnet", reddit_poc: "Reddit · POC",
   reddit: "Reddit · pasted", x: "X · pasted", facebook: "Facebook Group", discord: "Discord",
   slack: "Slack", linkedin: "LinkedIn DM", instagram: "Instagram DM", manual: "Manual",
 };
+const NEW_CHANNELS = new Set(["stackexchange", "agingcare", "mumsnet"]);
 const STAGES = ["new", "drafted", "approved", "sent", "replied", "conversation", "trial"] as const;
 const STAGE_LABEL: Record<string, string> = { new: "Found", drafted: "Drafted", approved: "Approved", sent: "Sent", replied: "Replied", conversation: "Conversation", trial: "In trial", dismissed: "Dismissed" };
 const EVENT_TYPES = ["started", "core", "returned", "paid", "referred"] as const;
@@ -49,9 +52,9 @@ const btnSmall = "rounded-full border border-[var(--border)] bg-[var(--surface)]
 function LlmSetupGate({ onGoSettings }: { onGoSettings: () => void }) {
   return (
     <section className="mt-5 rounded-[var(--radius)] border-2 border-[var(--amber)] bg-[var(--surface)] p-5" aria-label="Muse LLM setup required">
-      <h2 className="font-serif text-xl font-bold">Step 2 — Configure AI models (one-time setup)</h2>
+      <h2 className="font-serif text-xl font-bold">Step 2 — Configure AI (one-time setup)</h2>
       <p className="mt-2 text-sm leading-relaxed">Your target profile (Step 1) is done. Now configure Muse — this is a one-time step: the configuration is saved and persists, so you will not be asked again on the next search or visit. You can still change it later anytime from <strong>Edit AI config</strong> in the AI settings. EarlyProof runs on Muse: pain-language expansion, lead classification, outreach drafts, feedback summaries and next-experiment suggestions are core steps of the flow — not optional add-ons — and there is no rule-only fallback mode. Until Muse is configured, search, classification, drafts and the rest of the core flow stay blocked.</p>
-      <p className="mt-2 text-sm leading-relaxed"><strong>What to do:</strong> open the AI settings in this app and enter <strong>your Muse API key</strong> and <strong>your Muse model names</strong> (a small/fast model and a large model) there. Enter them <strong>in the app only — never in chat</strong>. Your key is stored server-side and never shown again beyond its last 4 characters.</p>
+      <p className="mt-2 text-sm leading-relaxed"><strong>What to do:</strong> open the AI settings in this app and enter <strong>your Muse API key</strong> there — models are picked automatically, so there is nothing else to configure. Enter it <strong>in the app only — never in chat</strong>. Your key is stored server-side and never shown again beyond its last 4 characters.</p>
       <p className="mt-2 text-sm text-[var(--dim)]">The rule-based relevance check still runs underneath as a pre-filter and safety net — but on its own it clears nobody for outreach. Every lead must be classified by Muse before it can be used, and nothing ever posts without you approving the exact text.</p>
       <button type="button" className={btnPrimary + " mt-3"} onClick={onGoSettings}>Open AI settings</button>
     </section>
@@ -59,9 +62,9 @@ function LlmSetupGate({ onGoSettings }: { onGoSettings: () => void }) {
 }
 
 const WORKFLOW_STEPS = [
-  { n: 1, title: "Create target profile", hint: "Who they are, the pain, the workaround" },
-  { n: 2, title: "Configure AI models", hint: "Once — it persists; edit anytime" },
-  { n: 3, title: "Search channels", hint: "All open channels by default" },
+  { n: 1, title: "Create target profile", hint: "Product, what it does, whose pain" },
+  { n: 2, title: "Configure AI key", hint: "Once — it persists; edit anytime" },
+  { n: 3, title: "Search channels", hint: "Open channels, picked per profile" },
   { n: 4, title: "Synthesized results", hint: "Shown only after Muse synthesis" },
 ] as const;
 
@@ -92,12 +95,34 @@ function AiConfigStatus({ llm, onEdit }: { llm?: State["llm"]; onEdit: () => voi
   if (!llm?.configured) return null;
   return (
     <div className="mt-3 flex flex-wrap items-center gap-2 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-3 text-sm" aria-label="AI configuration status">
-      <span className="rounded-full bg-[var(--green-bg)] px-2 py-0.5 text-xs font-semibold text-[var(--accent)]">AI configured ✓</span>
-      <span className="text-[var(--dim)]">Muse · key {llm.keyHint || "saved"} · small/fast: <span className="font-medium text-[var(--text)]">{llm.smallModel}</span> · large: <span className="font-medium text-[var(--text)]">{llm.largeModel}</span></span>
+      <span className="rounded-full bg-[var(--accent-bg)] px-2 py-0.5 text-xs font-semibold text-[var(--accent)]">AI configured ✓</span>
+      <span className="text-[var(--dim)]">Muse · key {llm.keyHint || "saved"} · models automatic</span>
       <span className="text-[var(--dim)]">Saved once — you won't be asked again.</span>
       <button type="button" className={btnGhost + " ml-auto"} onClick={onEdit}>Edit AI config</button>
     </div>
   );
+}
+
+function VersionHeader() {
+  const vQ = useQuery({ queryKey: ["version"], queryFn: () => api.getVersion({}), staleTime: 60000 });
+  return (
+    <header className="mb-4">
+      <div className="flex flex-wrap items-center gap-2">
+        <h1 className="font-serif text-2xl font-bold">EarlyProof</h1>
+        {vQ.data && <span className="rounded-full border border-[var(--border)] px-2 py-0.5 text-xs text-[var(--dim)]" title="App version · git commit — so you always know which build you're testing">{vQ.data.label}</span>}
+      </div>
+      <p className="mt-1 text-sm leading-relaxed text-[var(--dim)]">As AI makes building cheap, finding users is the bottleneck. EarlyProof finds your first seed users where they already talk about the pain — then drafts the outreach, tracks replies, and follows the cohort. Asking any LLM to search gives you a list; EarlyProof runs the loop: anchored matching, Muse verdicts with evidence, approve-first outreach, reply nudges, and cohort tracking.</p>
+    </header>
+  );
+}
+
+function DemoButton({ onDone, flash }: { onDone: (profileId: number) => void; flash: (m: string) => void }) {
+  const demo = useMutation({
+    mutationFn: () => api.seedDemoData({}),
+    onSuccess: (r) => { if (r.ok) { onDone(r.profileId); flash("Demo workspace seeded — profile, leads, invite, events and one reply nudge. Explore every tab."); } else flash(r.message); },
+    onError: () => flash("Demo seeding failed — try again."),
+  });
+  return <button type="button" className={btnPrimary} disabled={demo.isPending} onClick={() => demo.mutate()}>{demo.isPending ? "Seeding…" : "Try the demo workspace"}</button>;
 }
 
 export function App() {
@@ -143,6 +168,7 @@ export function App() {
     <div className="min-h-screen bg-[var(--bg)] text-[var(--text)]">
       <SafeAreaTopScrim backgroundColor="var(--bg)" />
       <main className="mx-auto w-full max-w-3xl px-4 pb-28 pt-5">
+        <VersionHeader />
         <WorkflowStepper current={currentStep} done={stepDone} onStep={goStep} />
         <AiConfigStatus llm={llm} onEdit={() => setTab("ai")} />
         {/* Step 1 — Profile bar */}
@@ -162,9 +188,8 @@ export function App() {
 
         {activeProfile && !showProfileForm && (
           <div className="mt-3 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-3 text-sm">
-            <p><span className="font-semibold">Pain:</span> {activeProfile.pain || "—"}</p>
-            <p className="mt-1"><span className="font-semibold">Workaround today:</span> {activeProfile.workaround || "—"}</p>
-            <p className="mt-1"><span className="font-semibold">Core action:</span> {activeProfile.coreAction || "—"} <span className="text-[var(--dim)]">· Keywords: {activeProfile.keywords || "—"}</span></p>
+            <p><span className="font-semibold">{activeProfile.productName}</span> <span className="text-[var(--dim)]">— {activeProfile.productDesc || "no description"}</span></p>
+            <p className="mt-1"><span className="font-semibold">Whose pain:</span> {activeProfile.audience || "—"}{activeProfile.pain ? ` — ${activeProfile.pain}` : ""}</p>
             {parseJsonArr(activeProfile.painPhrases).length > 0 && <p className="mt-1"><span className="font-semibold">AI pain phrases:</span> {parseJsonArr(activeProfile.painPhrases).slice(0, 4).join(" · ")}{parseJsonArr(activeProfile.painPhrases).length > 4 ? " …" : ""} <span className="text-[var(--dim)]">(full list in the AI tab)</span></p>}
           </div>
         )}
@@ -195,13 +220,16 @@ export function App() {
             founder never sees the gate again — only the Edit AI config
             option in the status card above and the AI settings tab. */}
         {!activeProfile && tab !== "channels" && tab !== "ai" && (
-          <p className="mt-6 rounded-[var(--radius)] border border-dashed border-[var(--border)] p-4 text-sm text-[var(--dim)]"><strong className="text-[var(--text)]">Step 1:</strong> create a target profile first — who they are, the pain they hit, and what they do today instead. Everything in EarlyProof matches against that. Configuring AI models is Step 2, after the profile.</p>
+          <div className="mt-6 rounded-[var(--radius)] border border-dashed border-[var(--border)] p-4 text-sm text-[var(--dim)]">
+            <p><strong className="text-[var(--text)]">Step 1:</strong> create a target profile first — product, what it does, whose pain it solves. Everything in EarlyProof matches against that. Configuring AI is Step 2, after the profile.</p>
+            <div className="mt-3"><DemoButton onDone={(id) => { setProfileId(id); invalidate(); }} flash={flash} /></div>
+          </div>
         )}
 
         {activeProfile && !llm?.configured && tab !== "ai" && tab !== "channels" && <LlmSetupGate onGoSettings={() => setTab("ai")} />}
 
         {llm?.configured && activeProfile && tab === "queue" && <QueueTab profile={activeProfile} leads={leads} expansions={(data?.expansions ?? []).filter((x) => x.profileId === activeProfile.id)} llmConfigured={!!llm?.configured} connections={data?.connections ?? []} onGoChannels={() => setTab("channels")} flash={flash} invalidate={invalidate} />}
-        {llm?.configured && activeProfile && tab === "tracker" && <TrackerTab leads={leads} profile={activeProfile} flash={flash} invalidate={invalidate} />}
+        {llm?.configured && activeProfile && tab === "tracker" && <TrackerTab leads={leads} profile={activeProfile} followups={(data?.followups ?? []).filter((f) => f.profileId === activeProfile.id)} flash={flash} invalidate={invalidate} />}
         {llm?.configured && activeProfile && tab === "cohort" && <CohortTab profile={activeProfile} leads={leads} invites={invites} events={events} summaries={summaries} llmConfigured={!!llm?.configured} posthog={data?.posthog.find((p) => p.profileId === activeProfile.id)} flash={flash} invalidate={invalidate} />}
         {tab === "ai" && <AiTab profile={activeProfile} llm={llm} feedback={feedback} summaries={summaries} flash={flash} invalidate={invalidate} goCreateProfile={() => setShowProfileForm(true)} />}
         {tab === "channels" && <ChannelsTab connections={data?.connections ?? []} profile={activeProfile} insights={insights} llmConfigured={!!llm?.configured} flash={flash} invalidate={invalidate} />}
@@ -211,27 +239,30 @@ export function App() {
 }
 
 function ProfileForm({ existing, onDone, onClose }: { existing?: Profile; onDone: (id?: number) => void; onClose: () => void }) {
-  const [f, setF] = useState({ productName: existing?.productName ?? "", productDesc: existing?.productDesc ?? "", audience: existing?.audience ?? "", pain: existing?.pain ?? "", workaround: existing?.workaround ?? "", keywords: existing?.keywords ?? "", coreAction: existing?.coreAction ?? "" });
+  const blank = { productName: "", productDesc: "", audience: "", pain: "", workaround: "", keywords: "", coreAction: "" };
+  // The form shows three fields; the rest travel through untouched so an
+  // edit never wipes keywords, workaround or core action.
+  const fromExisting = () => ({ ...blank, productName: existing?.productName ?? "", productDesc: existing?.productDesc ?? "", audience: existing?.audience ?? "", pain: existing?.pain ?? "", workaround: existing?.workaround ?? "", keywords: existing?.keywords ?? "", coreAction: existing?.coreAction ?? "" });
+  const [f, setF] = useState(fromExisting);
   const [editing, setEditing] = useState(false);
+  // Resync when the async profile loads or the founder switches profiles —
+  // otherwise the form shows the previous (or empty) profile's values.
+  useEffect(() => { setF(fromExisting()); setEditing(false); }, [existing?.id]);
   const create = useMutation({ mutationFn: () => api.createProfile(f), onSuccess: (r) => onDone(r.id) });
   const update = useMutation({ mutationFn: () => api.updateProfile({ id: existing?.id ?? 0, ...f }), onSuccess: () => onDone() });
   const del = useMutation({ mutationFn: () => api.deleteProfile({ id: existing?.id ?? 0 }), onSuccess: () => onDone() });
-  const set = (k: keyof typeof f) => (e: { target: { value: string } }) => setF((v) => ({ ...v, [k]: e.target.value }));
+  const set = (k: "productName" | "productDesc" | "audience" | "pain") => (e: { target: { value: string } }) => setF((v) => ({ ...v, [k]: e.target.value }));
   return (
     <form className="mt-3 space-y-3 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-4" onSubmit={(e: FormEvent) => { e.preventDefault(); if (editing && existing) update.mutate(); else create.mutate(); }}>
       <h2 className="font-serif text-lg font-bold">Step 1 — Target profile</h2>
-      <p className="text-sm text-[var(--dim)]">This is the first step — everything else (AI config, search, synthesis) builds on this profile. Be narrow. “New parents whose baby wakes at 5am” finds people; “parents” finds nobody.</p>
+      <p className="text-sm text-[var(--dim)]">Three fields. This is the first step — everything else (AI config, search, synthesis) builds on this profile. Be narrow. “New parents whose baby wakes at 5am” finds people; “parents” finds nobody.</p>
       <div><label htmlFor="pf-name" className={labelCls}>Product name</label><input id="pf-name" aria-label="Product name" required value={f.productName} onChange={set("productName")} className={inputCls} placeholder="e.g. DawnFeed" /></div>
       <div><label htmlFor="pf-desc" className={labelCls}>What it does, in one line</label><input id="pf-desc" aria-label="What your product does" value={f.productDesc} onChange={set("productDesc")} className={inputCls} placeholder="e.g. Tracks night feeds and predicts the next wake window" /></div>
-      <div><label htmlFor="pf-aud" className={labelCls}>Who exactly — life moment, not demographic</label><input id="pf-aud" aria-label="Target audience" value={f.audience} onChange={set("audience")} className={inputCls} placeholder="e.g. First-time parents in the first 6 months" /></div>
-      <div><label htmlFor="pf-pain" className={labelCls}>The pain, in their words</label><textarea id="pf-pain" aria-label="The pain" rows={2} value={f.pain} onChange={set("pain")} className={inputCls} placeholder="e.g. I never know if she'll sleep through or wake screaming at 5am" /></div>
-      <div><label htmlFor="pf-work" className={labelCls}>What they do today instead (workaround)</label><input id="pf-work" aria-label="Current workaround" value={f.workaround} onChange={set("workaround")} className={inputCls} placeholder="e.g. Notes app timestamps and guesswork" /></div>
-      <div><label htmlFor="pf-kw" className={labelCls}>Search keywords (comma separated phrases)</label><input id="pf-kw" aria-label="Search keywords" value={f.keywords} onChange={set("keywords")} className={inputCls} placeholder="e.g. baby wakes at 5am, night feed tracking, sleep regression" /><p className="mt-1 text-xs text-[var(--dim)]">Each entry is matched as a phrase in context, not split into single words — and a post still needs a real topic term from your profile (audience / pain) in the post itself to be saved.</p></div>
-      <div><label htmlFor="pf-core" className={labelCls}>Core action — the one thing that counts as really using it</label><input id="pf-core" aria-label="Core action" value={f.coreAction} onChange={set("coreAction")} className={inputCls} placeholder="e.g. Logged a night feed three nights in a row" /></div>
+      <div><label htmlFor="pf-aud" className={labelCls}>Whose problem it solves — and what that problem is, in their words</label><textarea id="pf-aud" aria-label="Whose problem and what problem" rows={3} value={f.audience ? `${f.audience}${f.pain ? ` — ${f.pain}` : ""}` : f.pain} onChange={(e) => { const v = e.target.value; const i = v.indexOf(" — "); setF((prev) => ({ ...prev, audience: i >= 0 ? v.slice(0, i) : v, pain: i >= 0 ? v.slice(i + 3) : "" })); }} className={inputCls} placeholder="e.g. First-time parents in the first 6 months — I never know if she'll sleep through or wake screaming at 5am" /></div>
       <div className="flex flex-wrap gap-2">
         <button type="submit" className={btnPrimary} disabled={create.isPending || update.isPending}>{editing && existing ? "Save changes" : "Create profile"}</button>
         {existing && !editing && <button type="button" className={btnGhost} onClick={() => setEditing(true)}>Edit this profile instead</button>}
-        {existing && <button type="button" className={btnGhost} onClick={() => { if (window.confirm("Delete this profile and its leads, invites and events?")) del.mutate(); }}>Delete profile</button>}
+        {existing && <button type="button" className={btnGhost} onClick={() => { if (window.confirm("Delete this profile and everything under it (leads, invites, events, nudges)?")) del.mutate(); }}>Delete profile</button>}
         <button type="button" className={btnGhost} onClick={onClose}>Close</button>
       </div>
       {(create.error || update.error) && <p className="text-sm text-[var(--red)]">Saving failed — try again.</p>}
@@ -242,9 +273,27 @@ function ProfileForm({ existing, onDone, onClose }: { existing?: Profile; onDone
 function QueueTab({ profile, leads, expansions, llmConfigured, connections, onGoChannels, flash, invalidate }: { profile: Profile; leads: Lead[]; expansions: State["expansions"]; llmConfigured: boolean; connections: State["connections"]; onGoChannels: () => void; flash: (m: string) => void; invalidate: () => void }) {
   // Step 3 default: ALL open channels are searched. Open channels are the
   // public, searchable ones that need no founder-provided API or account
-  // connection to search — Bluesky public search, Hacker News, GitHub public
-  // search. Closed channels are never in this default list.
-  const [channels, setChannels] = useState<string[]>(["bluesky", "hackernews", "github"]);
+  // connection — Bluesky, Hacker News, GitHub, Stack Exchange, AgingCare and
+  // Mumsnet. Closed channels are never in this default list.
+  const OPEN_DEFAULTS = ["bluesky", "hackernews", "github", "stackexchange", "agingcare", "mumsnet"];
+  const [channels, setChannels] = useState<string[]>(OPEN_DEFAULTS);
+  // Profile-aware picks: which channels fit THIS profile (signals + Muse
+  // plan). Applied once per profile — the founder's own toggles win after.
+  const [recsApplied, setRecsApplied] = useState(false);
+  useEffect(() => setRecsApplied(false), [profile.id]);
+  const recQ = useQuery({ queryKey: ["recs", profile.id], queryFn: () => api.recommendChannels({ profileId: profile.id }) });
+  useEffect(() => {
+    if (recsApplied || !recQ.data || recQ.data.status !== "ok") return;
+    const open = recQ.data.recs.filter((r) => !r.needsConnection && r.fit !== "poor").map((r) => r.channel);
+    setChannels(open.length ? open : OPEN_DEFAULTS);
+    setRecsApplied(true);
+  }, [recQ.data, recsApplied]);
+  const recReasons: Record<string, string> = {};
+  for (const r of recQ.data?.recs ?? []) recReasons[r.channel] = r.reasons.join(" · ");
+  // Search-run progress: the server records real phases per run; the latest
+  // run's plain-words summary is shown once it lands.
+  const [runId, setRunId] = useState(0);
+  const runQ = useQuery({ queryKey: ["run", runId], queryFn: () => api.searchRunStatus({ runId }), enabled: runId > 0, refetchOnWindowFocus: false });
   const redditConnected = !!connections.find((c) => c.channel === "reddit_poc")?.connected;
   const [subs, setSubs] = useState("");
   const [sortByScore, setSortByScore] = useState(true);
@@ -267,6 +316,7 @@ function QueueTab({ profile, leads, expansions, llmConfigured, connections, onGo
     mutationFn: () => api.expandSearchAndRerun({ profileId: profile.id, channels, subreddits: subs }),
     onSuccess: (r) => {
       invalidate();
+      setRunId(r.runId);
       setLastSearch({ found: r.found, created: r.created, synthesized: r.synthesized });
       setResult(describeSearch(r, true));
       if (r.synthesized) flash(`Expanded search done — round ${r.expansionRound} found ${r.synthesized} synthesized result${r.synthesized === 1 ? "" : "s"}, deduplicated against the leads you already had.`);
@@ -282,6 +332,7 @@ function QueueTab({ profile, leads, expansions, llmConfigured, connections, onGo
     mutationFn: () => api.searchLiveLeads({ profileId: profile.id, channels, subreddits: subs }),
     onSuccess: (r) => {
       invalidate();
+      setRunId(r.runId);
       setLastSearch({ found: r.found, created: r.created, synthesized: r.synthesized });
       setResult(describeSearch(r, false));
       if (r.synthesized) flash(`Search + synthesis done — ${r.synthesized} synthesized results below, each with its Muse verdict and evidence quote.`);
@@ -312,26 +363,28 @@ function QueueTab({ profile, leads, expansions, llmConfigured, connections, onGo
       <div className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-4">
         <h2 className="font-serif text-lg font-bold">Step 3 — Search</h2>
         <p className="mt-1 text-sm text-[var(--dim)]">By default, search runs across <strong className="text-[var(--text)]">all open channels</strong> — the public, searchable ones that don't require you to provide an API or account connection. Live search runs on free APIs, only when you tap Search — no continuous polling.</p>
-        <p className="mt-1 text-sm text-[var(--dim)]">Search starts with a <strong className="text-[var(--text)]">light pre-filter — a safety net, not the relevance gate</strong>: a post becomes a candidate when the post itself contains your profile's domain anchor — for a makeup profile, an actual makeup term like makeup, foundation or eyeliner; for a developer profile, an anchor like users, traction, feedback or Show HN — <em>plus</em> at least one pain or workaround signal in the person's own words. It does <strong className="text-[var(--text)]">not</strong> need to repeat a keyword phrase word-for-word. Generic words like “skill” or “sucks” never count as an anchor, so off-domain matches still can't get in, and each candidate's reason names the anchor and signal that matched. If a search would otherwise pass almost nothing, the top anchored candidates are passed up to Muse anyway — <strong className="text-[var(--text)]">Muse makes the real relevance call</strong> (Step 4), with an evidence quote and confidence, and only Muse's synthesized results are shown below. Before searching, Muse also builds the <strong className="text-[var(--text)]">expansion plan</strong> below — where else these people talk, in their own language — and the search runs those expanded queries too, not just your original keyword.</p>
+        <p className="mt-1 text-sm text-[var(--dim)]">Search starts with a <strong className="text-[var(--text)]">light pre-filter — a safety net, not the relevance gate</strong>: a post becomes a candidate when the post itself contains your profile's domain anchor — for a makeup profile, an actual makeup term like makeup, foundation or eyeliner; for a developer profile, an anchor like users, traction or feedback — <em>plus</em> at least one pain or workaround signal in the person's own words. Community forums without a search API (AgingCare, Mumsnet Talk) are searched through their public sitemaps — thread titles matched with the same gate, always labeled title-only. It does <strong className="text-[var(--text)]">not</strong> need to repeat a keyword phrase word-for-word. Generic words like “skill” or “sucks” never count as an anchor, so off-domain matches still can't get in, and each candidate's reason names the anchor and signal that matched. If a search would otherwise pass almost nothing, the top anchored candidates are passed up to Muse anyway — <strong className="text-[var(--text)]">Muse makes the real relevance call</strong> (Step 4), with an evidence quote and confidence, and only Muse's synthesized results are shown below. Before searching, Muse also builds the <strong className="text-[var(--text)]">expansion plan</strong> below — where else these people talk, in their own language — and the search runs those expanded queries too, not just your original keyword.</p>
         <fieldset className="mt-3">
-          <legend className={labelCls}>Open channels — searched by default</legend>
+          <legend className={labelCls}>Open channels — picked for this profile, toggle freely</legend>
           <div className="flex flex-wrap gap-2">
-            {([["bluesky", "Bluesky · public search"], ["hackernews", "Hacker News · public search"], ["github", "GitHub · public search"]] as [string, string][]).map(([v, label]) => (
-              <label key={v} className={`flex cursor-pointer items-center gap-2 rounded-full border px-3 py-1.5 text-sm ${channels.includes(v) ? "border-[var(--accent)] bg-[var(--green-bg)] font-semibold" : "border-[var(--border)]"}`}>
+            {([["bluesky", "Bluesky · public search"], ["hackernews", "Hacker News · public search"], ["github", "GitHub · public search"], ["stackexchange", "Stack Exchange · public Q&A"], ["agingcare", "AgingCare · forum threads"], ["mumsnet", "Mumsnet · forum threads"]] as [string, string][]).map(([v, label]) => (
+              <label key={v} title={recReasons[v] ?? label} className={`flex cursor-pointer items-center gap-2 rounded-full border px-3 py-1.5 text-sm ${channels.includes(v) ? "border-[var(--accent)] bg-[var(--accent-bg)] font-semibold" : "border-[var(--border)]"}`}>
                 <input type="checkbox" aria-label={label} checked={channels.includes(v)} onChange={() => toggle(v)} />{label}
+                {NEW_CHANNELS.has(v) && <span className="rounded-full bg-[var(--accent)] px-1.5 py-0.5 text-[10px] font-bold text-[var(--accent-text)]">New</span>}
               </label>
             ))}
           </div>
+          {recQ.data?.message && <p className="mt-2 text-xs text-[var(--dim)]">{recQ.data.message} Hover a channel for why.</p>}
         </fieldset>
         {isFirstFeedback && (
-          <p className="mt-3 rounded-[var(--radius)] bg-[var(--green-bg)] p-2 text-sm"><strong>Hacker News for FirstFeedback is Ask HN-only.</strong> HN is searched with help-request phrasing — “how did you get your first users”, “launched to crickets”, “no traction”, “need feedback on my project” — and only posts whose title starts with <strong>“Ask HN”</strong> count as candidates. <strong>“Show HN” showcases are excluded</strong> before the pre-filter: earlier runs were dominated by Show HN announcements, which are people launching, not people asking for help finding first users. Bluesky and GitHub search exactly as before.</p>
+          <p className="mt-3 rounded-[var(--radius)] bg-[var(--accent-bg)] p-2 text-sm"><strong>Hacker News for FirstFeedback is Ask HN-only.</strong> HN is searched with help-request phrasing — “how did you get your first users”, “launched to crickets”, “no traction”, “need feedback on my project” — and only posts whose title starts with <strong>“Ask HN”</strong> count as candidates. <strong>“Show HN” showcases are excluded</strong> before the pre-filter: earlier runs were dominated by Show HN announcements, which are people launching, not people asking for help finding first users. Bluesky and GitHub search exactly as before.</p>
         )}
         <fieldset className="mt-3">
           <legend className={labelCls}>Closed channels — only with your API / connection</legend>
           <p className="text-sm text-[var(--dim)]">Closed channels are <strong className="text-[var(--text)]">not searched by default</strong>. Provide the API or account connection for a closed channel and it joins the search; until then it's left out, and it never blocks the open-channel search above.</p>
           <div className="mt-2 flex flex-wrap items-center gap-2">
             {redditConnected ? (
-              <label className={`flex cursor-pointer items-center gap-2 rounded-full border px-3 py-1.5 text-sm ${channels.includes("reddit_poc") ? "border-[var(--accent)] bg-[var(--green-bg)] font-semibold" : "border-[var(--border)]"}`}>
+              <label className={`flex cursor-pointer items-center gap-2 rounded-full border px-3 py-1.5 text-sm ${channels.includes("reddit_poc") ? "border-[var(--accent)] bg-[var(--accent-bg)] font-semibold" : "border-[var(--border)]"}`}>
                 <input type="checkbox" aria-label="Reddit POC — connected" checked={channels.includes("reddit_poc")} onChange={() => toggle("reddit_poc")} />Reddit POC · your OAuth connected ✓
               </label>
             ) : (
@@ -351,7 +404,7 @@ function QueueTab({ profile, leads, expansions, llmConfigured, connections, onGo
         <div className="mt-4 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface-alt)] p-3">
           <div className="flex flex-wrap items-center gap-2">
             <h3 className="font-serif text-base font-bold">Where Muse will look — expansion plan</h3>
-            {plan && latestExpansion && <span className="rounded-full bg-[var(--green-bg)] px-2 py-0.5 text-xs font-semibold text-[var(--accent)]">Round {latestExpansion.round} · anchor: “{plan.anchorTerm}”</span>}
+            {plan && latestExpansion && <span className="rounded-full bg-[var(--accent-bg)] px-2 py-0.5 text-xs font-semibold text-[var(--accent)]">Round {latestExpansion.round} · anchor: “{plan.anchorTerm}”</span>}
           </div>
           <p className="mt-1 text-sm text-[var(--dim)]">Muse builds this from your profile's audience, pain, workaround and product: query variants in the person's own language, related pain phrases and adjacent problems, and the communities where those people already talk — each mapped to the open or closed channel that reaches it. <strong className="text-[var(--text)]">Every expanded query must contain the domain anchor</strong> (for this profile, a real “{plan?.anchorTerm || "domain"}” term) — generic words alone never become a query, so expansion can't bring back off-topic matches.{plan && plan.droppedUnanchored > 0 ? ` ${plan.droppedUnanchored} unanchored suggestion${plan.droppedUnanchored === 1 ? " was" : "s were"} dropped for exactly that reason.` : ""}</p>
           {!plan && (
@@ -377,7 +430,7 @@ function QueueTab({ profile, leads, expansions, llmConfigured, connections, onGo
                     {plan.communities.map((c, i) => (
                       <li key={i} className="rounded-[var(--radius)] bg-[var(--surface)] px-2.5 py-1.5">
                         <span className="font-medium">{c.name}</span>{c.where && <span className="text-[var(--dim)]"> · {c.where}</span>}
-                        <span className={`ml-2 rounded-full px-2 py-0.5 text-[11px] font-semibold ${c.access === "closed" ? "bg-[var(--amber-bg)] text-[var(--amber)]" : "bg-[var(--green-bg)] text-[var(--accent)]"}`}>{c.access === "closed" ? "Closed — provide API / join & send" : "Open — searched by default"} · {CHANNEL_LABEL[c.channel] ?? c.channel}</span>
+                        <span className={`ml-2 rounded-full px-2 py-0.5 text-[11px] font-semibold ${c.access === "closed" ? "bg-[var(--amber-bg)] text-[var(--amber)]" : "bg-[var(--accent-bg)] text-[var(--accent)]"}`}>{c.access === "closed" ? "Closed — provide API / join & send" : "Open — searched by default"} · {CHANNEL_LABEL[c.channel] ?? c.channel}</span>
                         {c.why && <span className="mt-0.5 block text-[var(--dim)]">{c.why}</span>}
                       </li>
                     ))}
@@ -390,9 +443,10 @@ function QueueTab({ profile, leads, expansions, llmConfigured, connections, onGo
           )}
         </div>
         <div className="mt-3 flex flex-wrap items-center gap-2">
-          <button type="button" className={btnPrimary} disabled={!channels.length || search.isPending || !llmConfigured} onClick={() => search.mutate()}>{search.isPending ? "Searching, then synthesizing with Muse…" : "Search open channels"}</button>
+          <button type="button" className={btnPrimary} disabled={!channels.length || search.isPending || !llmConfigured} onClick={() => search.mutate()}>{search.isPending ? "Searching, then synthesizing with Muse…" : "Search selected channels"}</button>
           <label className="flex items-center gap-2 text-sm"><input type="checkbox" aria-label="Sort queue by match score" checked={sortByScore} onChange={(e) => setSortByScore(e.target.checked)} /> Strongest match first</label>
         </div>
+        {runQ.data && runId > 0 && <p role="status" className="mt-2 rounded-[var(--radius)] bg-[var(--accent-bg)] p-2 text-sm font-medium">{runQ.data.detail}</p>}
         {result && <p role="status" className="mt-2 text-sm">{result}</p>}
       </div>
 
@@ -405,7 +459,7 @@ function QueueTab({ profile, leads, expansions, llmConfigured, connections, onGo
             <button type="button" className={btnPrimary + " mt-2"} disabled={classify.isPending} onClick={() => classify.mutate()}>{classify.isPending ? "Synthesizing…" : awaitingSynthesis.length ? `Synthesize ${awaitingSynthesis.length} waiting candidate${awaitingSynthesis.length === 1 ? "" : "s"} with Muse` : "Re-run Muse synthesis"}</button>
           </>
         ) : (
-          <p className="mt-1 rounded-[var(--radius)] bg-[var(--amber-bg)] p-2 text-sm text-[var(--amber)]"><strong>Step 2 not done yet.</strong> Muse synthesis is a must-have step, and Muse isn't configured yet. Enter your Muse API key and Muse model names in the AI settings — in the app only, never in chat. Until then, no candidate can be synthesized, drafted for, or contacted; there is no rule-only mode.</p>
+          <p className="mt-1 rounded-[var(--radius)] bg-[var(--amber-bg)] p-2 text-sm text-[var(--amber)]"><strong>Step 2 not done yet.</strong> Muse synthesis is a must-have step, and Muse isn't configured yet. Enter your Muse API key in the AI settings — in the app only, never in chat. Until then, no candidate can be synthesized, drafted for, or contacted; there is no rule-only mode.</p>
         )}
         {classifyResult && <p role="status" className="mt-2 text-sm">{classifyResult}</p>}
       </div>
@@ -515,14 +569,14 @@ function LeadCard({ lead, llmConfigured, invalidate }: { lead: Lead; llmConfigur
         const sig = parseJsonObj(lead.llmSignals);
         const lowConf = lead.llmConfidence > 0 && lead.llmConfidence < 60;
         const held = (lowConf || lead.llmCategory === "irrelevant") && !lead.llmReviewed;
-        const chip = (on: unknown, label: string) => <span key={label} className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${on ? "bg-[var(--green-bg)] text-[var(--accent)]" : "bg-[var(--surface-alt)] text-[var(--dim)]"}`}>{on ? "✓ " : "✗ "}{label}</span>;
+        const chip = (on: unknown, label: string) => <span key={label} className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${on ? "bg-[var(--accent-bg)] text-[var(--accent)]" : "bg-[var(--surface-alt)] text-[var(--dim)]"}`}>{on ? "✓ " : "✗ "}{label}</span>;
         return (
           <div className="mt-3 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface-alt)] p-3">
             <div className="flex flex-wrap items-center gap-2 text-xs">
               <span className="font-bold uppercase tracking-wide text-[var(--dim)]">AI verdict</span>
               <span className={`rounded-full px-2 py-0.5 font-bold ${lead.llmCategory === "seed_user" ? "bg-[var(--accent)] text-[var(--accent-text)]" : lead.llmCategory === "irrelevant" ? "bg-[var(--red)] text-white" : "bg-[var(--amber-bg)] text-[var(--amber)]"}`}>{LLM_CAT_LABEL[lead.llmCategory] ?? lead.llmCategory}</span>
               <span className="font-semibold" aria-label={`AI confidence ${lead.llmConfidence} percent`}>{lead.llmConfidence}% confidence</span>
-              {lead.llmReviewed && <span className="rounded-full bg-[var(--green-bg)] px-2 py-0.5 font-semibold text-[var(--accent)]">Reviewed by you</span>}
+              {lead.llmReviewed && <span className="rounded-full bg-[var(--accent-bg)] px-2 py-0.5 font-semibold text-[var(--accent)]">Reviewed by you</span>}
             </div>
             <div className="mt-2 flex flex-wrap gap-1.5">
               {chip(sig.rightPerson, "Right person")}
@@ -563,15 +617,20 @@ function LeadCard({ lead, llmConfigured, invalidate }: { lead: Lead; llmConfigur
   );
 }
 
-function TrackerTab({ leads, profile, flash, invalidate }: { leads: Lead[]; profile: Profile; flash: (m: string) => void; invalidate: () => void }) {
+function TrackerTab({ leads, profile, followups, flash, invalidate }: { leads: Lead[]; profile: Profile; followups: State["followups"]; flash: (m: string) => void; invalidate: () => void }) {
   const status = useMutation({ mutationFn: (v: { id: number; s: string }) => api.setLeadStatus({ leadId: v.id, status: v.s as never }), onSuccess: () => invalidate() });
   const invite = useMutation({ mutationFn: (lead: Lead) => api.createInvite({ profileId: profile.id, leadId: lead.id, seedName: lead.author || lead.authorHandle }), onSuccess: (r) => { invalidate(); if (!r.code) { flash(r.message || "That lead can't start a trial yet — it must be classified by Muse first."); return; } flash(`Tagged invite created: code ${r.code}. Send them your app link with ?ep=${r.code} — their usage lands in the Cohort tab, separate from everyone else.`); } });
+  const nudge = useMutation({ mutationFn: (v: { id: number; o: "replied" | "snoozed" | "stopped" }) => api.answerNudge({ followupId: v.id, outcome: v.o }), onSuccess: (r) => { invalidate(); flash(r.message); } });
   const counts = STAGES.map((s) => ({ s, n: leads.filter((l) => l.status === s).length }));
   const active = leads.filter((l) => l.status !== "dismissed");
+  const sent = leads.filter((l) => ["sent", "replied", "conversation", "trial"].includes(l.status));
+  const replied = leads.filter((l) => ["replied", "conversation", "trial"].includes(l.status));
+  const replyRate = sent.length ? Math.round((replied.length / sent.length) * 100) : null;
+  const funnel = counts.map(({ s, n }) => ({ stage: STAGE_LABEL[s] ?? s, n }));
   return (
     <section className="mt-5">
       <h2 className="font-serif text-lg font-bold">Reply → conversation → trial</h2>
-      <p className="text-sm text-[var(--dim)]">One tracker for every channel. A reply that never becomes a conversation is not a seed user — move each person honestly.</p>
+      <p className="text-sm text-[var(--dim)]">One tracker for every channel. A reply that never becomes a conversation is not a seed user — move each person honestly.{replyRate !== null && <> Reply rate so far: <strong className="text-[var(--text)]">{replyRate}%</strong> ({replied.length} of {sent.length} sent moved to a reply or further).</>}</p>
       <div className="mt-3 flex flex-wrap gap-1.5" role="list" aria-label="Funnel counts">
         {counts.map(({ s, n }) => (
           <div key={s} role="listitem" className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-center">
@@ -579,6 +638,40 @@ function TrackerTab({ leads, profile, flash, invalidate }: { leads: Lead[]; prof
           </div>
         ))}
       </div>
+      {active.length > 0 && (
+        <div className="mt-3 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-3" aria-label="Pipeline funnel">
+          <ResponsiveContainer width="100%" height={funnel.length * 30}>
+            <BarChart data={funnel} layout="vertical" margin={{ left: 8, right: 16 }}>
+              <XAxis type="number" hide />
+              <YAxis type="category" dataKey="stage" width={110} tick={{ fontSize: 11 }} />
+              <Tooltip />
+              <Bar dataKey="n" fill="var(--accent)" radius={[0, 4, 4, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      )}
+      {followups.length > 0 && (
+        <div className="mt-4 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-3">
+          <h3 className="font-serif text-base font-bold">Reply nudges ({followups.length})</h3>
+          <p className="mt-1 text-sm text-[var(--dim)]">Sent, but no reply movement yet. They replied somewhere else? Say so and the lead moves. Need more time? Snooze 3 days. Never going to chase? Stop.</p>
+          <div className="mt-2 space-y-2">
+            {followups.map((f) => {
+              const l = leads.find((x) => x.id === f.leadId);
+              return (
+                <div key={f.id} className="flex flex-wrap items-center gap-2 rounded-[var(--radius)] bg-[var(--surface-alt)] p-2.5 text-sm">
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate font-semibold">{l ? `${l.author || l.authorHandle || "Unknown"} · ${l.title || l.body.slice(0, 60)}` : "A sent lead"}</p>
+                    <p className="text-xs text-[var(--dim)]">Nudge due {fmtDate(f.dueAt)}</p>
+                  </div>
+                  <button type="button" className={btnSmall} disabled={nudge.isPending} onClick={() => nudge.mutate({ id: f.id, o: "replied" })}>They replied</button>
+                  <button type="button" className={btnSmall} disabled={nudge.isPending} onClick={() => nudge.mutate({ id: f.id, o: "snoozed" })}>Snooze 3 days</button>
+                  <button type="button" className={btnSmall} disabled={nudge.isPending} onClick={() => nudge.mutate({ id: f.id, o: "stopped" })}>Stop</button>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
       <div className="mt-4 space-y-2">
         {!active.length && <p className="rounded-[var(--radius)] border border-dashed border-[var(--border)] p-4 text-sm text-[var(--dim)]">No one in the tracker yet — leads appear here as you work the match queue.</p>}
         {active.map((l) => {
@@ -697,7 +790,7 @@ function NextExperimentPanel({ profile, summaries, llmConfigured, flash, invalid
       <p className="mt-1 text-sm text-[var(--dim)]">From your cohort signals, your Muse model suggests the next experiment in a fixed order — change the <strong>audience</strong> first, then the <strong>message</strong>, then the <strong>problem</strong>. This is a core Muse step: there is no rule-based suggestion standing in for it. It will never give you a PMF score or verdict: whether these signals count as PMF is your call.</p>
       {llmConfigured
         ? <button type="button" className={btnPrimary + " mt-2"} disabled={suggest.isPending} onClick={() => suggest.mutate()}>{suggest.isPending ? "Thinking…" : "Suggest next experiment with Muse"}</button>
-        : <p className="mt-2 rounded-[var(--radius)] bg-[var(--amber-bg)] p-2 text-sm text-[var(--amber)]"><strong>Setup required.</strong> Next-experiment suggestions need Muse configured — enter your Muse API key and Muse model names in the AI tab, in the app only. Until then this step is blocked, not replaced by a rule-based guess.</p>}
+        : <p className="mt-2 rounded-[var(--radius)] bg-[var(--amber-bg)] p-2 text-sm text-[var(--amber)]"><strong>Setup required.</strong> Next-experiment suggestions need Muse configured — enter your Muse API key in the AI tab, in the app only. Until then this step is blocked, not replaced by a rule-based guess.</p>}
       {latest && (
         <div className="mt-3 rounded-[var(--radius)] border border-[var(--border)] p-3">
           <div className="flex flex-wrap items-center gap-2">
@@ -746,7 +839,7 @@ function FeedbackSummaryView({ summary }: { summary: Summary }) {
 
 function AiTab({ profile, llm, feedback, summaries, flash, invalidate, goCreateProfile }: { profile?: Profile; llm?: State["llm"]; feedback: FeedbackEntry[]; summaries: Summary[]; flash: (m: string) => void; invalidate: () => void; goCreateProfile: () => void }) {
   const configured = !!llm?.configured;
-  const [f, setF] = useState({ provider: "muse", apiKey: "", baseUrl: "", smallModel: llm?.smallModel ?? "", largeModel: llm?.largeModel ?? "", founderVoice: llm?.founderVoice ?? "" });
+  const [f, setF] = useState({ apiKey: "", founderVoice: llm?.founderVoice ?? "" });
   const [testMsg, setTestMsg] = useState("");
   const save = useMutation({ mutationFn: () => api.saveLlmSettings(f), onSuccess: () => { invalidate(); setF((v) => ({ ...v, apiKey: "" })); flash("Muse settings saved. Your Muse API key stays on the server and is never shown again — only its last 4 characters."); } });
   const clear = useMutation({ mutationFn: () => api.clearLlmSettings({}), onSuccess: () => { invalidate(); flash("Muse settings removed. Muse is required, so the core flow is now blocked until you configure Muse again in the AI settings."); } });
@@ -775,7 +868,7 @@ function AiTab({ profile, llm, feedback, summaries, flash, invalidate, goCreateP
     <section className="mt-5 space-y-4">
       <div>
         <h2 className="font-serif text-lg font-bold">Step 2 — AI settings {configured ? "· Edit AI config" : "· Muse is required, not optional"}</h2>
-        <p className="text-sm text-[var(--dim)]">{configured ? <><strong className="text-[var(--text)]">You're configured — this step is done, and you won't be asked again</strong> on any search or visit. Your Muse configuration is saved and persists. Use this page only when you want to edit your config: change a model name, replace the key, or update your voice notes, then save. </> : <>This is Step 2 of the workflow, after your target profile (Step 1) — and it's a one-time, must-have setup: configure it once here, it persists, and you won't be asked again; you can still edit it here anytime. Without your Muse API key and Muse model names, EarlyProof's core flow — search, classification, drafts, feedback summaries, next experiments — stays blocked, and there is no rule-only mode to fall back to. </>} The AI reads and writes; it never decides. It never posts or DMs on its own, never scores your PMF, and low-confidence verdicts are held for your review instead of hidden behind a number. A small, fast Muse model does the high-volume work (pain expansion, lead classification); your large Muse model is used for outreach drafts and feedback summaries. The rule-based topic gate stays underneath as a pre-filter and safety net, so a model can't resurrect a post the rules rejected — but it never substitutes for Muse classification.</p>
+        <p className="text-sm text-[var(--dim)]">{configured ? <><strong className="text-[var(--text)]">You're configured — this step is done, and you won't be asked again</strong> on any search or visit. Your Muse configuration is saved and persists. Use this page only when you want to edit your config: replace the key or update your voice notes, then save. </> : <>This is Step 2 of the workflow, after your target profile (Step 1) — and it's a one-time, must-have setup: configure it once here, it persists, and you won't be asked again; you can still edit it here anytime. Without your Muse API key, EarlyProof's core flow — search, classification, drafts, feedback summaries, next experiments — stays blocked, and there is no rule-only mode to fall back to. </>} The AI reads and writes; it never decides. It never posts or DMs on its own, never scores your PMF, and low-confidence verdicts are held for your review instead of hidden behind a number. Muse models are picked automatically — a fast tier for high-volume work (pain expansion, lead classification), a large tier for outreach drafts and feedback summaries. The rule-based topic gate stays underneath as a pre-filter and safety net, so a model can't resurrect a post the rules rejected — but it never substitutes for Muse classification.</p>
       </div>
 
       {/* Settings */}
@@ -783,16 +876,11 @@ function AiTab({ profile, llm, feedback, summaries, flash, invalidate, goCreateP
         <div className="flex flex-wrap items-center gap-2">
           <h3 className="font-serif text-base font-bold">{configured ? "Edit AI config" : "Muse LLM settings"}</h3>
           {configured
-            ? <span className="rounded-full bg-[var(--green-bg)] px-2 py-0.5 text-xs font-semibold text-[var(--accent)]">Configured ✓ · Muse · key {llm?.keyHint} · saved — not asked again</span>
+            ? <span className="rounded-full bg-[var(--accent-bg)] px-2 py-0.5 text-xs font-semibold text-[var(--accent)]">Configured ✓ · Muse · key {llm?.keyHint} · saved — not asked again</span>
             : <span className="rounded-full bg-[var(--amber-bg)] px-2 py-0.5 text-xs font-bold text-[var(--amber)]">Setup required — core flow blocked until Muse is configured</span>}
         </div>
-        <p className="text-sm text-[var(--dim)]">The provider is <strong>Muse</strong> — every AI feature in EarlyProof runs on Muse models, and Muse setup is required before the core flow unlocks. Enter your Muse API key and both Muse model names here in the app — never in chat. The key is stored server-side for this workspace, used only when you run an AI action, and never displayed again.</p>
-        <div className="grid gap-2 sm:grid-cols-2">
-          <div><label htmlFor="llm-provider" className={labelCls}>Provider</label><input id="llm-provider" aria-label="LLM provider" value="Muse" readOnly className={inputCls} /></div>
-          <div><label htmlFor="llm-key" className={labelCls}>Muse API key {llm?.hasKey ? `(saved ${llm.keyHint} — leave blank to keep)` : ""}</label><input id="llm-key" aria-label="Muse API key" type="password" autoComplete="off" value={f.apiKey} onChange={set("apiKey")} className={inputCls} placeholder="Your Muse API key" /></div>
-          <div><label htmlFor="llm-small" className={labelCls}>Small / fast Muse model — expansion & classification (required)</label><input id="llm-small" aria-label="Small fast Muse model name" required value={f.smallModel} onChange={set("smallModel")} className={inputCls} placeholder="Your small / fast Muse model name" /></div>
-          <div><label htmlFor="llm-large" className={labelCls}>Large Muse model — drafts & feedback summaries (required)</label><input id="llm-large" aria-label="Large Muse model name" required value={f.largeModel} onChange={set("largeModel")} className={inputCls} placeholder="Your large Muse model name" /></div>
-        </div>
+        <p className="text-sm text-[var(--dim)]">The provider is <strong>Muse</strong> — every AI feature in EarlyProof runs on Muse models, and Muse setup is required before the core flow unlocks. Enter your Muse API key here in the app — never in chat. Models are automatic, so there is nothing to pick. The key is stored server-side for this workspace, used only when you run an AI action, and never displayed again.</p>
+        <div><label htmlFor="llm-key" className={labelCls}>Muse API key {llm?.hasKey ? `(saved ${llm.keyHint} — leave blank to keep)` : ""}</label><input id="llm-key" aria-label="Muse API key" type="password" autoComplete="off" value={f.apiKey} onChange={set("apiKey")} className={inputCls} placeholder="Your Muse API key" /></div>
         <div><label htmlFor="llm-voice" className={labelCls}>Your voice — how you actually write (drafts are written in this voice)</label><textarea id="llm-voice" aria-label="Founder voice notes" rows={2} value={f.founderVoice} onChange={set("founderVoice")} className={inputCls} placeholder="e.g. Plain and a bit dry. Short sentences. I say 'I built' not 'we're excited to'. Never use emojis or hype words." /></div>
         <div className="flex flex-wrap gap-2">
           <button type="submit" className={btnPrimary} disabled={save.isPending}>{configured ? "Save changes to AI config" : "Save Muse settings"}</button>
@@ -812,11 +900,11 @@ function AiTab({ profile, llm, feedback, summaries, flash, invalidate, goCreateP
             <p className="mt-1 text-sm text-[var(--dim)]">Your plain description (“{profile.pain.slice(0, 90)}{profile.pain.length > 90 ? "…" : ""}”) becomes the phrases real people type when they hit this pain, the workaround language that proves they're already hacking a solution, and exclusions that keep adjacent noise out of search.</p>
             {configured
               ? <button type="button" className={btnPrimary + " mt-2"} disabled={expand.isPending} onClick={() => expand.mutate()}>{expand.isPending ? "Expanding…" : painPhrases.length ? "Re-expand pain language" : "Expand pain language"}</button>
-              : <p className="mt-2 rounded-[var(--radius)] bg-[var(--amber-bg)] p-2 text-sm text-[var(--amber)]"><strong>Setup required.</strong> Pain expansion is a core Muse step and is blocked until you enter your Muse API key and Muse model names in the settings above — in the app only, never in chat.</p>}
+              : <p className="mt-2 rounded-[var(--radius)] bg-[var(--amber-bg)] p-2 text-sm text-[var(--amber)]"><strong>Setup required.</strong> Pain expansion is a core Muse step and is blocked until you enter your Muse API key in the settings above — in the app only, never in chat.</p>}
             {expandMsg && <p role="status" className="mt-2 text-sm">{expandMsg}</p>}
             {painPhrases.length > 0 && (
               <div className="mt-3 space-y-2 text-sm">
-                <div><p className="font-semibold">Phrases people use</p><div className="mt-1 flex flex-wrap gap-1.5">{painPhrases.map((p) => <span key={p} className="rounded-full bg-[var(--green-bg)] px-2.5 py-1 text-xs font-medium">“{p}”</span>)}</div></div>
+                <div><p className="font-semibold">Phrases people use</p><div className="mt-1 flex flex-wrap gap-1.5">{painPhrases.map((p) => <span key={p} className="rounded-full bg-[var(--surface-alt)] px-2.5 py-1 text-xs font-medium">“{p}”</span>)}</div></div>
                 {workPhrases.length > 0 && <div><p className="font-semibold">Workaround language</p><div className="mt-1 flex flex-wrap gap-1.5">{workPhrases.map((p) => <span key={p} className="rounded-full bg-[var(--surface-alt)] px-2.5 py-1 text-xs font-medium">“{p}”</span>)}</div></div>}
                 {exclusions.length > 0 && <div><p className="font-semibold">Exclusions — signals it's not this pain</p><div className="mt-1 flex flex-wrap gap-1.5">{exclusions.map((p) => <span key={p} className="rounded-full bg-[var(--amber-bg)] px-2.5 py-1 text-xs font-medium text-[var(--amber)]">{p}</span>)}</div></div>}
                 <button type="button" className={btnGhost} disabled={applyKw.isPending} onClick={() => applyKw.mutate()}>Fold top phrases into my keywords</button>
@@ -918,7 +1006,7 @@ function ChannelsTab({ connections, profile, insights, llmConfigured, flash, inv
     <section className="mt-5 space-y-4">
       <div>
         <h2 className="font-serif text-lg font-bold">Channels — three honest modes</h2>
-        <p className="text-sm text-[var(--dim)]">Step 3 searches all <strong className="text-[var(--text)]">open channels</strong> (Bluesky public search, Hacker News, GitHub public search) by default — no connection needed here for those. <strong className="text-[var(--text)]">Closed channels</strong> join the search only after you provide their API or account connection on this page; leaving one unconnected never blocks the open-channel search. Live channels post only after you approve the exact draft. Closed communities without a search API are guided — you join and send. Reviews are insight only, never outreach.</p>
+        <p className="text-sm text-[var(--dim)]">Step 3 searches all <strong className="text-[var(--text)]">open channels</strong> (Bluesky public search, Hacker News, GitHub public search, Stack Exchange public Q&A, AgingCare forum threads, Mumsnet forum threads) by default — no connection needed here for those. <strong className="text-[var(--text)]">Closed channels</strong> join the search only after you provide their API or account connection on this page; leaving one unconnected never blocks the open-channel search. Live channels post only after you approve the exact draft. Closed communities without a search API are guided — you join and send. Reviews are insight only, never outreach.</p>
       </div>
 
       {/* Bluesky */}
@@ -1001,7 +1089,7 @@ function ChannelsTab({ connections, profile, insights, llmConfigured, flash, inv
 
 function InsightForm({ profile, insights, llmConfigured, flash, invalidate }: { profile: Profile; insights: State["insights"]; llmConfigured: boolean; flash: (m: string) => void; invalidate: () => void }) {
   const [f, setF] = useState({ sourceLabel: "", rawText: "" });
-  const add = useMutation({ mutationFn: () => api.addInsight({ profileId: profile.id, ...f }), onSuccess: (r) => { invalidate(); setF({ sourceLabel: "", rawText: "" }); flash(r.painLanguage ? "Insight saved — pain language extracted below. Fold the sharpest phrases into your profile keywords." : r.llmStatus === "not_configured" ? "Insight saved, but pain-language extraction is blocked: Muse setup is required. Enter your Muse API key and Muse model names in the AI tab — in the app only — then re-run extraction by saving the review again." : "Insight saved."); } });
+  const add = useMutation({ mutationFn: () => api.addInsight({ profileId: profile.id, ...f }), onSuccess: (r) => { invalidate(); setF({ sourceLabel: "", rawText: "" }); flash(r.painLanguage ? "Insight saved — pain language extracted below. Fold the sharpest phrases into your profile keywords." : r.llmStatus === "not_configured" ? "Insight saved, but pain-language extraction is blocked: Muse setup is required. Enter your Muse API key in the AI tab — in the app only — then re-run extraction by saving the review again." : "Insight saved."); } });
   const del = useMutation({ mutationFn: (id: number) => api.deleteInsight({ id }), onSuccess: () => invalidate() });
   return (
     <div className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-4">
