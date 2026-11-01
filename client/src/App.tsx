@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Bar, BarChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { SafeAreaTopScrim } from "@hatch/space-sdk/client";
@@ -26,11 +26,11 @@ function parsePlan(s: string): ExpansionPlanData {
 
 const CHANNEL_LABEL: Record<string, string> = {
   bluesky: "Bluesky", hackernews: "Hacker News", github: "GitHub", stackexchange: "Stack Exchange",
-  agingcare: "AgingCare", mumsnet: "Mumsnet", reddit_poc: "Reddit · POC",
+  agingcare: "AgingCare", mumsnet: "Mumsnet", makeuptalk: "MakeupTalk", reddit_poc: "Reddit · POC",
   reddit: "Reddit · pasted", x: "X · pasted", facebook: "Facebook Group", discord: "Discord",
   slack: "Slack", linkedin: "LinkedIn DM", instagram: "Instagram DM", manual: "Manual",
 };
-const NEW_CHANNELS = new Set(["stackexchange", "agingcare", "mumsnet"]);
+const NEW_CHANNELS = new Set(["stackexchange", "agingcare", "mumsnet", "makeuptalk"]);
 const STAGES = ["new", "drafted", "approved", "sent", "replied", "conversation", "trial"] as const;
 const STAGE_LABEL: Record<string, string> = { new: "Found", drafted: "Drafted", approved: "Approved", sent: "Sent", replied: "Replied", conversation: "Conversation", trial: "In trial", dismissed: "Dismissed" };
 const EVENT_TYPES = ["started", "core", "returned", "paid", "referred"] as const;
@@ -63,7 +63,7 @@ function LlmSetupGate({ onGoSettings }: { onGoSettings: () => void }) {
 
 // Open channels searched by default: public, searchable, no founder
 // connection needed. Closed channels are never in this default list.
-const OPEN_DEFAULTS = ["bluesky", "hackernews", "github", "stackexchange", "agingcare", "mumsnet"];
+const OPEN_DEFAULTS = ["bluesky", "hackernews", "github", "stackexchange", "agingcare", "mumsnet", "makeuptalk"];
 
 // Plain-words result narration shared by search and expand-and-rerun.
 function describeSearch(r: { found: number; created: number; discarded: number; pruned: number; promoted: number; synthesized: number; synthesisStatus: string; synthesisMessage: string; errors: { channel: string; message: string }[]; expansionRound: number; expansionAnchor: string; expansionQueries: string[]; nextSuggestions: string[] }, expanded: boolean, isFirstFeedback: boolean) {
@@ -140,24 +140,30 @@ export function App() {
   const summaries = useMemo(() => (data?.summaries ?? []).filter((s) => !activeProfile || s.profileId === activeProfile.id), [data, activeProfile]);
   const llm = data?.llm;
   // Profile-aware channel picks: which channels fit THIS profile (signals +
-  // Muse plan). Applied once per profile — the founder's own toggles win.
+  // Muse plan). Applied per profile AND per plan version — when the
+  // auto-generated expansion plan lands, picks sharpen. The founder's own
+  // toggles always win: once touched, auto-apply never overwrites.
   // (Below the profile derivation — it reads activeProfile.)
-  const [recsApplied, setRecsApplied] = useState(false);
-  useEffect(() => { setRecsApplied(false); }, [activeProfile?.id]);
-  useEffect(() => { if (!activeProfile) setChannels(OPEN_DEFAULTS); }, [activeProfile?.id]);
+  const [recsAppliedKey, setRecsAppliedKey] = useState("");
+  const channelsTouched = useRef(false);
+  useEffect(() => { setRecsAppliedKey(""); channelsTouched.current = false; setChannels(OPEN_DEFAULTS); }, [activeProfile?.id]);
   const recQ = useQuery({ queryKey: ["recs", activeProfile?.id ?? 0], queryFn: () => api.recommendChannels({ profileId: activeProfile?.id ?? 0 }), enabled: !!activeProfile });
   useEffect(() => {
-    if (recsApplied || !recQ.data || recQ.data.status !== "ok") return;
+    if (!recQ.data || recQ.data.status !== "ok") return;
+    const key = `${activeProfile?.id ?? 0}:${recQ.data.basedOn ?? ""}`;
+    if (recsAppliedKey === key || channelsTouched.current) return;
     const open = recQ.data.recs.filter((r) => !r.needsConnection && r.fit !== "poor").map((r) => r.channel);
     setChannels(open.length ? open : OPEN_DEFAULTS);
-    setRecsApplied(true);
-  }, [recQ.data, recsApplied]);
+    setRecsAppliedKey(key);
+  }, [recQ.data, recsAppliedKey]);
   const recReasons: Record<string, string> = {};
   const recFit: Record<string, string> = {};
   for (const r of recQ.data?.recs ?? []) { recReasons[r.channel] = r.reasons.join(" · "); recFit[r.channel] = r.fit; }
   const recMessage = recQ.data?.status === "ok" ? recQ.data.message : "";
 
-  const invalidate = () => qc.invalidateQueries({ queryKey: ["state"] });
+  // Recs read the latest expansion plan, so anything that can create a plan
+  // refreshes them too — otherwise the picks never sharpen after planning.
+  const invalidate = () => { qc.invalidateQueries({ queryKey: ["state"] }); qc.invalidateQueries({ queryKey: ["recs"] }); };
   const flash = (m: string) => { setNotice(m); window.scrollTo({ top: 0, behavior: "smooth" }); };
 
   const hasProfile = profiles.length > 0;
@@ -215,7 +221,7 @@ export function App() {
         {activeProfile && !llm?.configured && tab !== "settings" && tab !== "profile" && <LlmSetupGate onGoSettings={() => setTab("settings")} />}
 
         {tab === "profile" && <ProfileTab profiles={profiles} activeProfile={activeProfile} onSelect={(id) => setProfileId(id)} onDone={(id) => { if (id) { setProfileId(id); setTab("search"); } invalidate(); }} />}
-        {llm?.configured && activeProfile && tab === "search" && <SearchTab profile={activeProfile} expansions={(data?.expansions ?? []).filter((x) => x.profileId === activeProfile.id)} llmConfigured={!!llm?.configured} connections={data?.connections ?? []} channels={channels} setChannels={setChannels} subs={subs} setSubs={setSubs} recReasons={recReasons} recFit={recFit} recMessage={recMessage} runId={runId} setRunId={setRunId} setLastSearch={setLastSearch} result={searchResult} setResult={setSearchResult} onGoSettings={() => setTab("settings")} onDone={() => setTab("results")} flash={flash} invalidate={invalidate} />}
+        {llm?.configured && activeProfile && tab === "search" && <SearchTab profile={activeProfile} expansions={(data?.expansions ?? []).filter((x) => x.profileId === activeProfile.id)} llmConfigured={!!llm?.configured} connections={data?.connections ?? []} channels={channels} setChannels={(c) => { channelsTouched.current = true; setChannels(c); }} subs={subs} setSubs={setSubs} recReasons={recReasons} recFit={recFit} recMessage={recMessage} runId={runId} setRunId={setRunId} setLastSearch={setLastSearch} result={searchResult} setResult={setSearchResult} onGoSettings={() => setTab("settings")} onDone={() => setTab("results")} flash={flash} invalidate={invalidate} />}
         {llm?.configured && activeProfile && tab === "results" && <ResultsTab profile={activeProfile} leads={leads} expansions={(data?.expansions ?? []).filter((x) => x.profileId === activeProfile.id)} llmConfigured={!!llm?.configured} channels={channels} subs={subs} sortByScore={sortByScore} setSortByScore={setSortByScore} lastSearch={lastSearch} setLastSearch={setLastSearch} setRunId={setRunId} flash={flash} invalidate={invalidate} />}
         {llm?.configured && activeProfile && tab === "tracker" && <TrackerTab leads={leads} profile={activeProfile} followups={(data?.followups ?? []).filter((f) => f.profileId === activeProfile.id)} flash={flash} invalidate={invalidate} />}
         {llm?.configured && activeProfile && tab === "cohort" && <CohortTab profile={activeProfile} leads={leads} invites={invites} events={events} summaries={summaries} llmConfigured={!!llm?.configured} posthog={data?.posthog.find((p) => p.profileId === activeProfile.id)} flash={flash} invalidate={invalidate} />}
@@ -287,7 +293,7 @@ function ProfileTab({ profiles, activeProfile, onSelect, onDone }: { profiles: P
 
 /* Search is input only: pick channels, press the one big button, watch it
    work. Matches appear on the Results tab, which opens automatically. */
-const OPEN_OPTS: [string, string][] = [["bluesky", "Bluesky · public search"], ["hackernews", "Hacker News · public search"], ["github", "GitHub · public search"], ["stackexchange", "Stack Exchange · public Q&A"], ["agingcare", "AgingCare · forum threads"], ["mumsnet", "Mumsnet · forum threads"]];
+const OPEN_OPTS: [string, string][] = [["bluesky", "Bluesky · public search"], ["hackernews", "Hacker News · public search"], ["github", "GitHub · public search"], ["stackexchange", "Stack Exchange · public Q&A"], ["agingcare", "AgingCare · forum threads"], ["mumsnet", "Mumsnet · forum threads"], ["makeuptalk", "MakeupTalk · forum threads"]];
 
 function SearchTab({ profile, expansions, llmConfigured, connections, channels, setChannels, subs, setSubs, recReasons, recFit, recMessage, runId, setRunId, setLastSearch, result, setResult, onGoSettings, onDone, flash, invalidate }: {
   profile: Profile; expansions: State["expansions"]; llmConfigured: boolean; connections: State["connections"];
@@ -312,6 +318,15 @@ function SearchTab({ profile, expansions, llmConfigured, connections, channels, 
     onSuccess: (r) => { invalidate(); setResult(r.message); if (r.status === "ok") flash("Expansion plan saved — it will drive the next search."); },
     onError: () => setResult("Expansion plan failed — try again."),
   });
+  // Channel likelihood runs itself: the first time a profile lands on Search
+  // with no expansion plan, Muse figures out where these people talk before
+  // the founder presses anything. Picks sharpen when the plan lands.
+  const autoPlanned = useRef(0);
+  useEffect(() => {
+    if (!llmConfigured || expansions.length > 0 || autoPlanned.current === profile.id || genPlan.isPending) return;
+    autoPlanned.current = profile.id;
+    genPlan.mutate();
+  }, [llmConfigured, expansions.length, profile.id]);
   const search = useMutation({
     mutationFn: () => api.searchLiveLeads({ profileId: profile.id, channels, subreddits: subs }),
     onSuccess: (r) => {

@@ -157,7 +157,8 @@ check(!!mRecs.find((r) => r.channel === "hackernews" && r.fit === "poor") && !!m
 // clustered topic, and each forum earns its place on its own.
 const MIRROR_KIN = { productName: "Magic Mirror", productDesc: "Helps people find cosmetics and put on makeup", audience: "As a mom I have no time; tired parents and mothers doing school-run makeup", pain: "never enough sleep so makeup looks bad, wasting money on the wrong foundation", workaround: "watch random tutorials", keywords: "makeup cosmetics", coreAction: "" };
 const kRecs = channelRecsFor(MIRROR_KIN, null).recs;
-check(sitemapForumsFor(MIRROR_KIN).length === 0 && !!kRecs.find((r) => r.channel === "agingcare" && r.fit === "poor") && !!kRecs.find((r) => r.channel === "mumsnet" && r.fit === "poor"), "makeup + kin words: forums unmapped and poor", null);
+check(sitemapForumsFor(MIRROR_KIN).map((f) => f.channel).join(",") === "makeuptalk" && !!kRecs.find((r) => r.channel === "agingcare" && r.fit === "poor") && !!kRecs.find((r) => r.channel === "mumsnet" && r.fit === "poor") && !!kRecs.find((r) => r.channel === "makeuptalk" && r.fit === "best" && !r.needsConnection), "makeup + kin words: only MakeupTalk maps, best + open; family forums poor", null);
+check(sitemapForumsFor(MAKEUP).map((f) => f.channel).join(",") === "makeuptalk" && !!channelRecsFor(MAKEUP, null).recs.find((r) => r.channel === "makeuptalk" && r.fit === "best"), "makeup fixture: MakeupTalk maps and leads recs", null);
 const sRecs = channelRecsFor(SECONDHIFT, null).recs;
 const sRd = sRecs.find((r) => r.channel === "reddit_poc");
 check(!!sRd && sRd.needsConnection && sRd.fit !== "poor", "career: Reddit surfaced with connection note", sRd);
@@ -225,7 +226,12 @@ check(
 );
 const acForum = sitemapForumsFor(WILLOW).find((f) => f.channel === "agingcare");
 const mnForum = sitemapForumsFor(DAWNLITE).find((f) => f.channel === "mumsnet");
-if (!acForum || !mnForum) throw new Error("SMOKE FAIL: forum mapping missing");
+const mtForum = sitemapForumsFor(MAKEUP).find((f) => f.channel === "makeuptalk");
+if (!acForum || !mnForum || !mtForum) throw new Error("SMOKE FAIL: forum mapping missing");
+check(
+  JSON.stringify(filterSitemapLocs(mtForum, ["https://www.makeuptalk.com/sitemap-1.xml", "https://www.makeuptalk.com/sitemap-4.xml", "https://www.makeuptalk.com/sitemap-3.xml", "https://www.makeuptalk.com/threads/eyeliner.6/"], MAKEUP)) === JSON.stringify(["https://www.makeuptalk.com/sitemap-4.xml", "https://www.makeuptalk.com/sitemap-3.xml"]),
+  "makeuptalk fetches newest content files only, never old files or thread urls",
+);
 const MN_LOCS = [
   "https://www.mumsnet.com/sitemap/talk/parenting/parenting_1",
   "https://www.mumsnet.com/sitemap/talk/sleep/sleep_2",

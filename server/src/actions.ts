@@ -623,7 +623,7 @@ type ExpansionPlan = {
 // the founder's own profile text vote channels up or down, Muse's expansion
 // plan votes with the communities it maps, and per-profile mappings decide
 // whether Stack Exchange or a sitemap forum earns a place at all.
-const OPEN_SEARCH_CHANNELS = ["bluesky", "hackernews", "github", "stackexchange", "agingcare", "mumsnet"];
+const OPEN_SEARCH_CHANNELS = ["bluesky", "hackernews", "github", "stackexchange", "agingcare", "mumsnet", "makeuptalk"];
 const DEV_SIGNALS = ["software", "developer", "developers", "programmer", "coding", "github", "api", "saas", "devtools", "open source", "pull request", "codebase", "deploy", "localhost", "npm", "startup", "indie hacker", "hacker news", "tech stack", "side project", "web app", "mobile app", "launch"];
 const CAREER_SIGNALS = ["laid off", "layoff", "layoffs", "unemployed", "job search", "freelance", "freelancer", "side hustle", "passive income", "income", "career", "interview", "resume", "fired", "severance", "paycheck"];
 const ISSUE_SIGNALS = ["bug", "bugs", "error", "errors", "broken", "issue", "issues", "crash", "exception"];
@@ -700,11 +700,11 @@ export function channelRecsFor(profile: ProfileLike, plan: ExpansionPlan | null)
   // on its own: one forum mapping never shields the other from the blind
   // penalty — a makeup profile mentioning moms must not keep AgingCare
   // checked just because Mumsnet mapped on the same kin words.
-  const smForums = sitemapForumsFor(profile);
-  for (const ch of ["agingcare", "mumsnet"] as const) {
-    const f = smForums.find((x) => x.channel === ch);
-    if (f) bump(ch, 2, `Real threads on ${f.label} match this topic — keyless sitemap-title search, no connection needed.`);
-    else bump(ch, -1, `No ${ch === "agingcare" ? "AgingCare" : "Mumsnet"} threads match this topic — it would search blindly.`);
+  const smMapped = new Map(sitemapForumsFor(profile).map((f) => [f.channel, f]));
+  for (const f of SITEMAP_FORUMS) {
+    const m = smMapped.get(f.channel);
+    if (m) bump(f.channel, 2, `Real threads on ${m.label} match this topic — keyless sitemap-title search, no connection needed.`);
+    else bump(f.channel, -1, `No ${f.label} threads match this topic — it would search blindly.`);
   }
 
   const rank: Record<ChannelFit, number> = { best: 0, good: 1, poor: 2 };
@@ -766,6 +766,11 @@ const ELDER_CORE = ["caregiver", "dementia", "alzheimer", "elderly", "hospice", 
 const ELDER_KIN = ["mom", "mum", "mother", "dad", "daddy", "father", "parents", "meds", "medication", "respite", "senior care", "aging parent"];
 const MUMSNET_CORE = ["pregnancy", "pregnant", "breastfeeding", "newborn", "toddler", "miscarriage", "fertility", "postnatal"];
 const MUMSNET_KIN = ["baby", "babies", "parent", "parents", "mom", "mum", "dad", "kids", "children", "sleep", "feed", "feeding", "school", "nursery", "caregiver", "dementia", "meds", "money", "debt", "layoff", "unemployed"];
+// Beauty topics whose public conversation lives on beauty forums — verified
+// 2026-11-01: MakeupTalk (XenForo) exposes a thread-URL sitemap index.
+// Specktra was checked the same day and only lists its homepage — no good.
+const BEAUTY_CORE = ["makeup", "cosmetics", "cosmetic", "foundation", "eyeliner", "mascara", "lipstick", "blush", "concealer", "eyeshadow", "skincare", "skin care", "nail polish", "nails"];
+const BEAUTY_KIN = ["beauty", "beautician", "sephora", "ulta", "drugstore", "tutorial", "tutorials", "holy grail", "makeover", "beauty routine"];
 // A section is one slice of a forum's sitemap worth fetching for a matching
 // profile: `token` must appear in the sitemap file's URL (slash-delimited so
 // "/talk/parenting/" never matches "eco-friendly-parenting"), `signals`
@@ -804,6 +809,18 @@ const SITEMAP_FORUMS: SitemapForum[] = [
     ],
     communityFor: mumsnetCommunity,
     core: MUMSNET_CORE, kin: MUMSNET_KIN, minScore: 2, maxFiles: 10,
+  },
+  {
+    channel: "makeuptalk", label: "MakeupTalk",
+    index: "https://www.makeuptalk.com/sitemap.php",
+    // XenForo numbers content files sequentially as they fill, oldest first —
+    // sitemap-4/sitemap-3 are the newest files verified 2026-11-01 (sitemap-1
+    // starts at 2003 threads). Substring matching also covers sitemap-40+.
+    // If the forum grows past sitemap-9 without a bump here, newer files are
+    // skipped gracefully — older threads still searched, never blind.
+    sections: [{ token: "sitemap-4", signals: null }, { token: "sitemap-3", signals: null }],
+    communityFor: () => "MakeupTalk",
+    core: BEAUTY_CORE, kin: BEAUTY_KIN, minScore: 2, maxFiles: 2,
   },
 ];
 export function sitemapForumsFor(profile: ProfileLike): SitemapForum[] {
@@ -994,7 +1011,7 @@ async function generateExpansionRound(
   const painPhrasesSaved: string[] = (() => { try { const v = JSON.parse(profile.painPhrases || "[]") as unknown; return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : []; } catch { return []; } })();
   const isLaterRound = round > 1;
   const r = await runLlm(ctx, "small",
-    `You are planning WHERE to find seed users for a founder — not just rewording one keyword. Build a search expansion plan from this target profile.\n\nProfile — Product: ${profile.productName} — ${profile.productDesc}\nAudience: ${profile.audience}\nPain (founder's words): ${profile.pain}\nWorkaround today: ${profile.workaround}\nFounder keywords: ${profile.keywords}\nCore action: ${profile.coreAction}\nPain phrases already known: ${painPhrasesSaved.join(" · ") || "(none yet)"}\n\nDOMAIN ANCHOR (hard rule): the anchor term is "${anchorTerm}". Valid anchor terms for queries: ${terms.join(", ")}. EVERY query you return MUST contain at least one of those anchor terms, word-for-word. A query made only of generic words (like "skill", "struggle", "help", "sucks", "beginner") is forbidden — unanchored queries are discarded server-side. If you broaden, broaden the pain/audience/community around the anchor, never drop the anchor.\n\nReturn:\n- anchorTerm: exactly "${anchorTerm}".\n- queries: ${isLaterRound ? "6-8" : "5-7"} search queries a real person in pain might match — variants and synonyms in the person's own language, each with a one-line intent. Cover different phrasings of the pain, the workaround, and beginner/first-time framings — all anchored.\n- painPhrases: 5-8 related pain phrases and adjacent problem phrasings in their words (these inform the founder; they are not all queries).\n- adjacentProblems: 3-5 adjacent problems the same person hits around this pain.\n- adjacentAudiences: 3-5 adjacent audiences — people one step wider than the profile who plausibly hit the same anchored pain.\n- communities: 5-8 specific places these people already talk — name the actual kind of place (e.g. for a beauty profile: beginner makeup subreddits, beauty forums, tutorial comment sections, beginner beauty groups/hashtags; for a caregiver profile: AgingCare Q&A and Discussions threads, Mumsnet elderly_parents threads). For each: name, where (platform/place), channel — one of bluesky, hackernews, github, stackexchange, agingcare, mumsnet, reddit_poc, reddit, x, facebook, discord, slack, linkedin, instagram, youtube (use stackexchange only for Q&A-style communities, agingcare for caregiver/elder-care forum threads, mumsnet for parenting/family forum threads) — access: "open" if it is a public searchable channel EarlyProof searches by default, "closed" if the founder must provide an API/connection or join and send themselves, and why this place fits.\n- relaxations: 2-4 specific over-strict terms or exact phrases from the profile/keywords that could be relaxed WITHOUT dropping the anchor (name the exact term and what to relax it to).\n- nextSuggestions: 3-5 concrete next expansion moves if this round still returns 0 synthesized results — broaden to an adjacent audience or adjacent pain (still anchored), try a different named channel or community, relax a named over-strict term.\n${isLaterRound ? `\nThis is expansion round ${round}. The previous search context: ${context.reason} It found ${context.found} candidates, the pre-filter dropped ${context.discarded}, Muse synthesized ${context.synthesized} results, and ${context.seenCount} leads are already seen (new results are deduplicated against them — do not repeat old queries). Previous rounds already tried these queries: ${previousQueries.join(" · ") || "(none)"}. Your new queries must be DIFFERENT from those: lean on the adjacent audiences, adjacent pains, new communities and the relaxations — while keeping every query anchored to "${anchorTerm}".` : `\nThis is expansion round 1, generated before the search runs.`}`,
+    `You are planning WHERE to find seed users for a founder — not just rewording one keyword. Build a search expansion plan from this target profile.\n\nProfile — Product: ${profile.productName} — ${profile.productDesc}\nAudience: ${profile.audience}\nPain (founder's words): ${profile.pain}\nWorkaround today: ${profile.workaround}\nFounder keywords: ${profile.keywords}\nCore action: ${profile.coreAction}\nPain phrases already known: ${painPhrasesSaved.join(" · ") || "(none yet)"}\n\nDOMAIN ANCHOR (hard rule): the anchor term is "${anchorTerm}". Valid anchor terms for queries: ${terms.join(", ")}. EVERY query you return MUST contain at least one of those anchor terms, word-for-word. A query made only of generic words (like "skill", "struggle", "help", "sucks", "beginner") is forbidden — unanchored queries are discarded server-side. If you broaden, broaden the pain/audience/community around the anchor, never drop the anchor.\n\nReturn:\n- anchorTerm: exactly "${anchorTerm}".\n- queries: ${isLaterRound ? "6-8" : "5-7"} search queries a real person in pain might match — variants and synonyms in the person's own language, each with a one-line intent. Cover different phrasings of the pain, the workaround, and beginner/first-time framings — all anchored.\n- painPhrases: 5-8 related pain phrases and adjacent problem phrasings in their words (these inform the founder; they are not all queries).\n- adjacentProblems: 3-5 adjacent problems the same person hits around this pain.\n- adjacentAudiences: 3-5 adjacent audiences — people one step wider than the profile who plausibly hit the same anchored pain.\n- communities: 5-8 specific places these people already talk — name the actual kind of place (e.g. for a beauty profile: beginner makeup subreddits, beauty forums, tutorial comment sections, beginner beauty groups/hashtags; for a caregiver profile: AgingCare Q&A and Discussions threads, Mumsnet elderly_parents threads). For each: name, where (platform/place), channel — one of bluesky, hackernews, github, stackexchange, agingcare, mumsnet, makeuptalk, reddit_poc, reddit, x, facebook, discord, slack, linkedin, instagram, youtube (use stackexchange only for Q&A-style communities, agingcare for caregiver/elder-care forum threads, mumsnet for parenting/family forum threads, makeuptalk for beauty/makeup/cosmetics forum threads) — access: "open" if it is a public searchable channel EarlyProof searches by default, "closed" if the founder must provide an API/connection or join and send themselves, and why this place fits.\n- relaxations: 2-4 specific over-strict terms or exact phrases from the profile/keywords that could be relaxed WITHOUT dropping the anchor (name the exact term and what to relax it to).\n- nextSuggestions: 3-5 concrete next expansion moves if this round still returns 0 synthesized results — broaden to an adjacent audience or adjacent pain (still anchored), try a different named channel or community, relax a named over-strict term.\n${isLaterRound ? `\nThis is expansion round ${round}. The previous search context: ${context.reason} It found ${context.found} candidates, the pre-filter dropped ${context.discarded}, Muse synthesized ${context.synthesized} results, and ${context.seenCount} leads are already seen (new results are deduplicated against them — do not repeat old queries). Previous rounds already tried these queries: ${previousQueries.join(" · ") || "(none)"}. Your new queries must be DIFFERENT from those: lean on the adjacent audiences, adjacent pains, new communities and the relaxations — while keeping every query anchored to "${anchorTerm}".` : `\nThis is expansion round 1, generated before the search runs.`}`,
     expansionPlanSchema);
   if (!r.ok) return r;
   const o = r.value;
@@ -1012,7 +1029,7 @@ async function generateExpansionRound(
     adjacentAudiences: cleanStrs(o.adjacentAudiences, 5),
     communities: o.communities.slice(0, 8).map((c) => ({
       name: c.name.trim().slice(0, 120), where: c.where.trim().slice(0, 120),
-      channel: ["bluesky", "hackernews", "github", "stackexchange", "agingcare", "mumsnet", "reddit_poc", "reddit", "x", "facebook", "discord", "slack", "linkedin", "instagram", "youtube", "manual"].includes(c.channel.trim()) ? c.channel.trim() : "manual",
+      channel: ["bluesky", "hackernews", "github", "stackexchange", "agingcare", "mumsnet", "makeuptalk", "reddit_poc", "reddit", "x", "facebook", "discord", "slack", "linkedin", "instagram", "youtube", "manual"].includes(c.channel.trim()) ? c.channel.trim() : "manual",
       access: c.access.trim().toLowerCase() === "closed" ? "closed" : "open",
       why: c.why.trim().slice(0, 240),
     })).filter((c) => c.name),
@@ -1183,13 +1200,14 @@ async function runChannelSearch(
           }
         }
       }
-    } else if (ch === "agingcare" || ch === "mumsnet") {
+    } else if (SITEMAP_FORUMS.some((f) => f.channel === ch)) {
       // Sitemap-indexed forums: no API, no RSS, bot-disallowed /search — but
       // public sitemaps with thread titles in the slugs. Scored title-only;
       // the candidate reason says so, and the founder verifies by opening
       // the thread. Skipped (never blind) when no forum maps to the profile.
       const forums = sitemapForumsFor(profile).filter((f) => f.channel === ch);
-      if (!forums.length) { errors.push({ channel: ch === "mumsnet" ? "Mumsnet" : "AgingCare", message: "No sitemap-indexed forum matches this profile's topic — skipped instead of searching blindly." }); continue; }
+      const label = SITEMAP_FORUMS.find((f) => f.channel === ch)?.label ?? ch;
+      if (!forums.length) { errors.push({ channel: label, message: "No sitemap-indexed forum matches this profile's topic — skipped instead of searching blindly." }); continue; }
       for (const forum of forums) {
         const r = await fetchSitemapEntries(forum, profile);
         if ("error" in r) { errors.push({ channel: forum.label, message: r.error }); continue; }
