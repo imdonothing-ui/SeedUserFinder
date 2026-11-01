@@ -8,6 +8,7 @@ import { eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/bun-sqlite";
 import { complete } from "./inference-stub.ts";
 import { Actions, analyseText, shouldRetryFetch, matchVariant, synonymsFor, sitemapLocs, slugTitleFor, sitemapForumsFor, filterSitemapLocs, sitemapCandidate, channelRecsFor, stackSitesFor, seCandidate } from "../server/src/actions.ts";
+import { META_MODEL, buildResponsesRequest, extractJsonValue, isDirectKey, completeViaMetaModel } from "../server/src/meta-api.ts";
 import { GATE_CORPUS, WILLOW, SECONDHIFT, DEV, MAKEUP, DAWNLITE } from "./gate-corpus.ts";
 import * as schema from "../server/src/schema.ts";
 
@@ -77,6 +78,31 @@ const llm = (await state()).llm;
 check(llm.hasKey === true && llm.smallModel === "auto" && llm.largeModel === "auto", "key-only setup stores key, models auto", llm);
 const tst = (await call("testLlmConnection", {})) as any;
 check(tst.ok === true, "stub connection test passes", tst);
+
+// 2b. Direct Muse Spark path: key routing, request shape, response reading,
+// and fail-closed behavior with a bogus key (no real key ever needed).
+check(META_MODEL === "muse-spark-1.3", "model pinned to muse-spark-1.3", META_MODEL);
+check(
+  isDirectKey("LLM|123|abc") === true && isDirectKey("  LLM|x") === true && isDirectKey("k-9999") === false,
+  "LLM| keys route direct, others use the runtime",
+);
+const req = buildResponsesRequest("hello", "LLM|1|secret");
+check(
+  req.url === "https://api.meta.ai/v1/responses" &&
+  req.headers.Authorization === "Bearer LLM|1|secret" &&
+  (JSON.parse(req.body) as any).model === "muse-spark-1.3",
+  "responses request: endpoint, bearer auth, pinned model",
+);
+check(
+  JSON.stringify(extractJsonValue({ output_text: 'noise {"a":1} tail' })) === JSON.stringify({ a: 1 }) &&
+  JSON.stringify(extractJsonValue({ output: [{ content: [{ text: 'x {"b":{"c":2}}' }] }] })) === JSON.stringify({ b: { c: 2 } }) &&
+  JSON.stringify(extractJsonValue({ choices: [{ message: { content: '{"ok":true}' } }] })) === JSON.stringify({ ok: true }) &&
+  extractJsonValue({ output_text: "no json here" }) === null &&
+  extractJsonValue(null) === null,
+  "response reading across API shapes, largest block wins",
+);
+const bogus = await completeViaMetaModel("Connection test: reply ok.", "LLM|0|bogus-key-for-smoke");
+check(bogus.ok === false && typeof (bogus as any).error === "string", "bogus key fails closed, never succeeds", bogus);
 
 // 3. Profile CRUD: 3-field create, edit preserves hidden fields, delete cascades.
 const p1 = (await call("createProfile", { productName: "P1", productDesc: "d", audience: "a", pain: "p", workaround: "w", keywords: "k1, k2", coreAction: "c" })) as any;

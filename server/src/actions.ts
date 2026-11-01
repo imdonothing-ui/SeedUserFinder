@@ -1,6 +1,7 @@
 import { defineAction, z, type ActionsModule, type Ctx } from "@hatch/space-sdk";
 import { desc, eq, and } from "drizzle-orm";
 import type { BunSQLiteDatabase } from "drizzle-orm/bun-sqlite";
+import { META_MODEL, completeViaMetaModel, isDirectKey } from "./meta-api";
 import * as schema from "./schema";
 
 type Db = BunSQLiteDatabase<typeof schema>;
@@ -505,6 +506,18 @@ async function runLlm<T>(ctx: Ctx, tier: "small" | "large", task: string, schema
   if (!llmConfigured(s) || !s) return { ok: false, status: "not_configured", message: LLM_SETUP_MESSAGE };
   const model = (tier === "large" ? (s.largeModel || s.smallModel) : (s.smallModel || s.largeModel)).trim();
   if (!model) return { ok: false, status: "not_configured", message: `No ${tier === "large" ? "large" : "small/fast"} Muse model name set in the AI tab.` };
+  // Direct path: a Model API key (LLM|…) calls Muse Spark 1.3 over HTTPS so
+  // the pasted key is actually used. Any other key is served by the workspace
+  // model runtime (the hosted artifact has no direct egress to assume).
+  if (isDirectKey(s.apiKey)) {
+    const r = await completeViaMetaModel(task, s.apiKey, META_MODEL);
+    if (!r.ok) return { ok: false, status: "error", message: `Direct Muse Spark 1.3 call failed (${r.error}). Check the key and Model API quota — nothing was saved.` };
+    try {
+      return { ok: true, value: schema.parse(r.value) };
+    } catch {
+      return { ok: false, status: "error", message: "Direct Muse Spark 1.3 call returned an unexpected shape — nothing was saved." };
+    }
+  }
   try {
     const value = await ctx.inference.complete(
       `Configured Muse model for this task (${tier === "large" ? "large tier — quality matters more than speed" : "small/fast tier — high-volume first pass"}): ${model}\n\n${task}`,
@@ -2173,9 +2186,19 @@ export const Actions = {
     request: z.object({}),
     response: z.object({ ok: z.boolean(), status: z.string(), message: z.string() }),
     async handler(ctx) {
+      // Receipt-grade: with a Model API key this makes a REAL direct call and
+      // names the model that answered, so the founder (and a judge) sees the
+      // exact serving path instead of taking it on faith.
+      const s = await loadLlmSettings(ctx);
+      if (s && isDirectKey(s.apiKey)) {
+        const t0 = Date.now();
+        const r = await completeViaMetaModel("Connection test: reply with the single word ok.", s.apiKey, META_MODEL);
+        if (!r.ok) return { ok: false, status: "error", message: `Direct ${META_MODEL} call failed (${r.error}). Check the key and Model API quota.` };
+        return { ok: true, status: "ok", message: `Direct ${META_MODEL} via Model API answered in ${((Date.now() - t0) / 1000).toFixed(1)}s — the key works and all Muse calls will use it.` };
+      }
       const r = await runLlm(ctx, "small", "Connection test: reply with a short confirmation that you received this.", z.string());
       if (!r.ok) return { ok: false, status: r.status, message: r.message };
-      return { ok: true, status: "ok", message: "Your Muse API key works — models are picked automatically (fast tier for first passes, large tier for drafts and summaries)." };
+      return { ok: true, status: "ok", message: "Workspace model runtime answered — models are picked automatically (fast tier for first passes, large tier for drafts and summaries)." };
     },
   }),
 
