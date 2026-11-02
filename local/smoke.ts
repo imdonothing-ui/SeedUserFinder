@@ -7,7 +7,7 @@ import { Database } from "bun:sqlite";
 import { eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/bun-sqlite";
 import { complete } from "./inference-stub.ts";
-import { Actions, analyseText, shouldRetryFetch, matchVariant, synonymsFor, sitemapLocs, slugTitleFor, sitemapForumsFor, filterSitemapLocs, sitemapCandidate, channelRecsFor, stackSitesFor, seCandidate, devtoTagsFor, lobstersFor, devtoCandidate, lobstersCandidate, ddgResults, groupVenues, mergeDiscovery, dynamicForumFor } from "../server/src/actions.ts";
+import { Actions, analyseText, shouldRetryFetch, matchVariant, synonymsFor, sitemapLocs, slugTitleFor, sitemapForumsFor, filterSitemapLocs, sitemapCandidate, channelRecsFor, stackSitesFor, seCandidate, devtoTagsFor, lobstersFor, devtoCandidate, lobstersCandidate, ddgResults, groupVenues, mergeDiscovery, dynamicForumFor, parseExpansionPlan } from "../server/src/actions.ts";
 import { META_MODEL, buildResponsesRequest, extractJsonValue, isDirectKey, completeViaMetaModel } from "../server/src/meta-api.ts";
 import { GATE_CORPUS, WILLOW, SECONDHIFT, DEV, MAKEUP, DAWNLITE } from "./gate-corpus.ts";
 import * as schema from "../server/src/schema.ts";
@@ -179,6 +179,20 @@ check(!!channelRecsFor(PASTSMART, null).recs.find((r) => r.channel === "stackexc
 check(lobstersFor(DEV) === true && lobstersFor(MAKEUP) === false && lobstersFor(SECONDHIFT) === false, "lobsters: dev only");
 const BOOT = { productName: "BootDebug", productDesc: "rubber-duck debugging help", audience: "bootcamp grads shipping first side projects", pain: "stuck debugging errors for hours", workaround: "posting on stack overflow", keywords: "", coreAction: "" };
 check(!!channelRecsFor(BOOT, null).recs.find((r) => r.channel === "hackernews" && r.fit !== "poor") && !!channelRecsFor(BOOT, null).recs.find((r) => r.channel === "lobsters" && r.fit !== "poor"), "dev markers (stack overflow, debugging, bootcamp) count as dev", null);
+const MARKET = { productName: "second hand market place", productDesc: "sell second hand stuff", audience: "buy and sell second hand marketplace", pain: "can't shift used goods, no buyers", workaround: "", keywords: "", coreAction: "" };
+const mfit = (ch: string) => channelRecsFor(MARKET, null).recs.find((r) => r.channel === ch)?.fit;
+check(mfit("bluesky") === "good" && mfit("hackernews") === "good" && mfit("github") === "poor" && mfit("stackexchange") === "poor" && mfit("agingcare") === "poor" && mfit("mumsnet") === "poor" && mfit("lobsters") === "poor", "marketplace: Bluesky+HN open, blind/expert channels poor", null);
+const THIN = { productName: "Foo", productDesc: "a marketplace for stuff", audience: "people", pain: "waiting", workaround: "", keywords: "", coreAction: "" };
+check(channelRecsFor(THIN, null).recs.find((r) => r.channel === "hackernews")?.fit === "poor", "single marketplace mention is not a commerce signal", null);
+const mProf = (await call("createProfile", { productName: "second hand market place", productDesc: "sell second hand stuff", audience: "buy and sell second hand marketplace", pain: "can't shift used goods, no buyers", workaround: "", keywords: "", coreAction: "" })) as any;
+const mAction = (await call("recommendChannels", { profileId: mProf.id })) as any;
+{
+  const open = ((mAction.recs ?? []) as any[]).filter((r) => !r.needsConnection && r.fit !== "poor").map((r) => r.channel);
+  const leaked = ["github", "stackexchange", "agingcare", "mumsnet", "lipstickalley", "devto", "lobsters"].filter((c) => open.includes(c));
+  check(typeof mAction.webOk === "boolean" && open.includes("bluesky") && open.includes("hackernews") && leaked.length === 0, "marketplace action: Bluesky+HN open, expert/kin channels never leak, says whether web was checked", { webOk: mAction.webOk, open });
+}
+check(parseExpansionPlan(JSON.stringify({ anchorTerm: "buy", queries: [], painPhrases: [], adjacentProblems: [], adjacentAudiences: [], communities: [{ name: "r/Flipping", where: "Reddit", channel: "reddit_poc", access: "closed", why: "flippers" }], relaxations: [], nextSuggestions: [], droppedUnanchored: 0 })) !== null, "communities-only plan parses usable", null);
+check(parseExpansionPlan("{}") === null && parseExpansionPlan("not json{{") === null, "empty/garbage plan parses unusable", null);
 const dRecs2 = channelRecsFor(DEV, null).recs;
 check(!!dRecs2.find((r) => r.channel === "devto" && r.fit !== "poor") && !!dRecs2.find((r) => r.channel === "lobsters" && r.fit !== "poor"), "dev: devto + lobsters viable", null);
 // A plan community votes its channel up: Stack Exchange is poor for makeup

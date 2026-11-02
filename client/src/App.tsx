@@ -174,6 +174,7 @@ export function App() {
   }
   const recVenues: { name: string; where: string; why: string; url: string }[] = recQ.data?.venues ?? [];
   const recMessage = recQ.data?.status === "ok" ? recQ.data.message : "";
+  const webOk = recQ.data?.status === "ok" ? !!recQ.data.webOk : false;
 
   // Recs read the latest expansion plan, so anything that can create a plan
   // refreshes them too — otherwise the picks never sharpen after planning.
@@ -235,7 +236,7 @@ export function App() {
         {activeProfile && !llm?.configured && tab !== "settings" && tab !== "profile" && <LlmSetupGate onGoSettings={() => setTab("settings")} />}
 
         {tab === "profile" && <ProfileTab profiles={profiles} activeProfile={activeProfile} onSelect={(id) => setProfileId(id)} onDone={(id) => { if (id) { setProfileId(id); setTab("search"); } invalidate(); }} llm={llm} flash={flash} invalidate={invalidate} />}
-        {llm?.configured && activeProfile && tab === "search" && <SearchTab profile={activeProfile} expansions={(data?.expansions ?? []).filter((x) => x.profileId === activeProfile.id)} llmConfigured={!!llm?.configured} connections={data?.connections ?? []} channels={channels} setChannels={(c) => { channelsTouched.current = true; setChannels(c); }} subs={subs} setSubs={setSubs} recReasons={recReasons} openRecs={openRecs} recVenues={recVenues} recsReady={!!recQ.data} recMessage={recMessage} runId={runId} setRunId={setRunId} setLastSearch={setLastSearch} result={searchResult} setResult={setSearchResult} onGoSettings={() => setTab("settings")} onDone={() => setTab("results")} flash={flash} invalidate={invalidate} />}
+        {llm?.configured && activeProfile && tab === "search" && <SearchTab profile={activeProfile} expansions={(data?.expansions ?? []).filter((x) => x.profileId === activeProfile.id)} llmConfigured={!!llm?.configured} connections={data?.connections ?? []} channels={channels} setChannels={(c) => { channelsTouched.current = true; setChannels(c); }} subs={subs} setSubs={setSubs} recReasons={recReasons} openRecs={openRecs} recVenues={recVenues} recsReady={!!recQ.data} webOk={webOk} recMessage={recMessage} runId={runId} setRunId={setRunId} setLastSearch={setLastSearch} result={searchResult} setResult={setSearchResult} onGoSettings={() => setTab("settings")} onDone={() => setTab("results")} flash={flash} invalidate={invalidate} />}
         {llm?.configured && activeProfile && tab === "results" && <ResultsTab profile={activeProfile} leads={leads} expansions={(data?.expansions ?? []).filter((x) => x.profileId === activeProfile.id)} llmConfigured={!!llm?.configured} channels={channels} subs={subs} sortByScore={sortByScore} setSortByScore={setSortByScore} lastSearch={lastSearch} setLastSearch={setLastSearch} setRunId={setRunId} flash={flash} invalidate={invalidate} />}
         {llm?.configured && activeProfile && tab === "tracker" && <TrackerTab leads={leads} profile={activeProfile} followups={(data?.followups ?? []).filter((f) => f.profileId === activeProfile.id)} flash={flash} invalidate={invalidate} />}
         {llm?.configured && activeProfile && tab === "cohort" && <CohortTab profile={activeProfile} leads={leads} invites={invites} events={events} feedback={feedback} summaries={summaries} llmConfigured={!!llm?.configured} posthog={data?.posthog.find((p) => p.profileId === activeProfile.id)} flash={flash} invalidate={invalidate} />}
@@ -417,10 +418,10 @@ function descriptorFor(ch: string): string {
   return CH_DESCRIPTOR[ch] ?? (ch.startsWith("forum:") ? "forum threads" : "public search");
 }
 
-function SearchTab({ profile, expansions, llmConfigured, connections, channels, setChannels, subs, setSubs, recReasons, openRecs, recVenues, recsReady, recMessage, runId, setRunId, setLastSearch, result, setResult, onGoSettings, onDone, flash, invalidate }: {
+function SearchTab({ profile, expansions, llmConfigured, connections, channels, setChannels, subs, setSubs, recReasons, openRecs, recVenues, recsReady, webOk, recMessage, runId, setRunId, setLastSearch, result, setResult, onGoSettings, onDone, flash, invalidate }: {
   profile: Profile; expansions: State["expansions"]; llmConfigured: boolean; connections: State["connections"];
   channels: string[]; setChannels: (c: string[] | ((v: string[]) => string[])) => void; subs: string; setSubs: (s: string) => void;
-  recReasons: Record<string, string>; openRecs: { channel: string; label: string; fit: string }[]; recVenues: { name: string; where: string; why: string; url: string }[]; recsReady: boolean; recMessage: string; runId: number; setRunId: (id: number) => void;
+  recReasons: Record<string, string>; openRecs: { channel: string; label: string; fit: string }[]; recVenues: { name: string; where: string; why: string; url: string }[]; recsReady: boolean; webOk: boolean; recMessage: string; runId: number; setRunId: (id: number) => void;
   setLastSearch: (s: { found: number; created: number; synthesized: number } | null) => void;
   result: string; setResult: (s: string) => void;
   onGoSettings: () => void; onDone: () => void; flash: (m: string) => void; invalidate: () => void;
@@ -439,6 +440,10 @@ function SearchTab({ profile, expansions, llmConfigured, connections, channels, 
   const redditConnected = !!connections.find((c) => c.channel === "reddit_poc")?.connected;
   const latestExpansion = [...expansions].sort((a, b) => b.round - a.round)[0];
   const plan: ExpansionPlanData | null = latestExpansion ? parsePlan(latestExpansion.plan) : null;
+  // Same usable-plan rule as the server: a round with no queries and no
+  // communities reads as empty on both sides, never "no plan yet" here
+  // while the channel message says otherwise.
+  const planUsable = !!plan && (plan.queries.length > 0 || plan.communities.length > 0);
   // Pills come ONLY from the server lineup (dynamic `forum:` ids included).
   // Before recs land there are no pills — only the finding line below.
   // Nothing generic is ever assumed or reused across profiles.
@@ -504,12 +509,18 @@ function SearchTab({ profile, expansions, llmConfigured, connections, channels, 
         <ol className="mt-3 space-y-1.5 text-sm">
           <li><span className="font-semibold">✓ Target locked</span> <span className="text-[var(--dim)]">— {profile.productName}: {profile.productDesc || "no description yet"}</span></li>
           <li>{recsReady ? (
-            <><span className="font-semibold">✓ Web search</span> <span className="text-[var(--dim)]">— {foundExtra ? `found ${foundExtra} extra place${foundExtra === 1 ? "" : "s"} for this profile beyond the defaults` : "checked the web — the defaults already cover this topic"}</span></>
+            webOk ? (
+              <><span className="font-semibold">✓ Web search</span> <span className="text-[var(--dim)]">— {foundExtra ? `found ${foundExtra} extra place${foundExtra === 1 ? "" : "s"} for this profile beyond the defaults` : "checked the web — the defaults already cover this topic"}</span></>
+            ) : (
+              <><span className="font-semibold">! Web search</span> <span className="text-[var(--dim)]">— the web check was throttled, so this lineup is profile-signals only. <button type="button" className="underline" onClick={() => invalidate()}>Re-check the web</button></span></>
+            )
           ) : (
             <><span className="font-semibold">… Web search</span> <span className="text-[var(--dim)]">— searching the web for discussion threads about this pain…</span></>
           )}</li>
-          <li>{plan && latestExpansion ? (
-            <><span className="font-semibold">✓ Muse plan</span> <span className="text-[var(--dim)]">— round {latestExpansion.round}, anchored to “{plan.anchorTerm}”</span></>
+          <li>{planUsable && latestExpansion ? (
+            <><span className="font-semibold">✓ Muse plan</span> <span className="text-[var(--dim)]">— round {latestExpansion.round}, anchored to “{plan?.anchorTerm}”</span></>
+          ) : plan && latestExpansion ? (
+            <><span className="font-semibold">! Muse plan</span> <span className="text-[var(--dim)]">— round {latestExpansion.round} came back empty — tap Re-expand for sharper picks</span></>
           ) : (
             <><span className="font-semibold">… Muse plan</span> <span className="text-[var(--dim)]">— {genPlan.isPending ? "Muse is mapping where else they talk…" : "starts by itself as soon as this tab opens"}</span></>
           )}</li>

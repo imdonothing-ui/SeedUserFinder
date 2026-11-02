@@ -629,6 +629,29 @@ type ExpansionPlan = {
   nextSuggestions: string[];
   droppedUnanchored: number;
 };
+// A stored plan counts as usable when it can still vote channels up through
+// mapped communities, even if its search queries are gone (older app versions
+// saved rows this shape can't parse — those must read as empty, never as
+// "no plan yet" when a round visibly exists).
+export function parseExpansionPlan(raw: string): ExpansionPlan | null {
+  try {
+    const p = JSON.parse(raw || "{}") as Partial<ExpansionPlan>;
+    const hasQueries = Array.isArray(p.queries) && p.queries.length > 0;
+    const hasCommunities = Array.isArray(p.communities) && p.communities.length > 0;
+    if (!hasQueries && !hasCommunities) return null;
+    return {
+      anchorTerm: typeof p.anchorTerm === "string" ? p.anchorTerm : "",
+      queries: Array.isArray(p.queries) ? p.queries : [],
+      painPhrases: Array.isArray(p.painPhrases) ? p.painPhrases : [],
+      adjacentProblems: Array.isArray(p.adjacentProblems) ? p.adjacentProblems : [],
+      adjacentAudiences: Array.isArray(p.adjacentAudiences) ? p.adjacentAudiences : [],
+      communities: Array.isArray(p.communities) ? p.communities : [],
+      relaxations: Array.isArray(p.relaxations) ? p.relaxations : [],
+      nextSuggestions: Array.isArray(p.nextSuggestions) ? p.nextSuggestions : [],
+      droppedUnanchored: typeof p.droppedUnanchored === "number" ? p.droppedUnanchored : 0,
+    };
+  } catch { return null; }
+}
 
 // ─── Web venue discovery (Google-like first step, generalized) ───────────
 // For ANY profile — not just hardcoded verticals: query DuckDuckGo's keyless
@@ -716,6 +739,9 @@ export type DiscoveryFindings = {
   evidence: { channel: string; threads: number; samples: string[] }[];
   dynamic: DynamicVenue[];
   venues: { name: string; where: string; why: string; url: string }[];
+  // False when the web was never actually checked (throttled challenge page,
+  // fetch failure) — the UI must say so instead of claiming coverage.
+  webOk: boolean;
 };
 const discoveryCache = new Map<number, { at: number; data: DiscoveryFindings }>();
 export function clearDiscoveryCache(profileId: number) { discoveryCache.delete(profileId); }
@@ -738,7 +764,7 @@ function discoveryQuery(profile: ProfileLike): string {
 export async function discoverVenuesFor(profile: ProfileLike & { id: number }): Promise<DiscoveryFindings> {
   const hit = discoveryCache.get(profile.id);
   if (hit && Date.now() - hit.at < DISCOVERY_TTL_MS) return hit.data;
-  const data: DiscoveryFindings = { evidence: [], dynamic: [], venues: [] };
+  const data: DiscoveryFindings = { evidence: [], dynamic: [], venues: [], webOk: false };
   const anchor = discoveryAnchor(profile);
   const page = await fetchText(`https://html.duckduckgo.com/html/?q=${encodeURIComponent(discoveryQuery(profile))}`, { headers: { "User-Agent": DDG_UA } });
   if (page.status !== 200) return data;
@@ -766,6 +792,7 @@ export async function discoverVenuesFor(profile: ProfileLike & { id: number }): 
     if (verifiedDomains.has(g.domain) || data.venues.length >= 6) continue;
     data.venues.push({ name: labelFor(g.domain), where: g.domain, why: `Web search found ${g.urls.length} discussion thread${g.urls.length === 1 ? "" : "s"} about '${anchor}' here — e.g. “${g.titles[0]}”. No thread sitemap: join and add by hand.`, url: `https://${g.domain}/` });
   }
+  data.webOk = true;
   discoveryCache.set(profile.id, { at: Date.now(), data });
   return data;
 }
@@ -803,6 +830,9 @@ const ISSUE_SIGNALS = ["bug", "bugs", "error", "errors", "broken", "issue", "iss
 const LIFE_SIGNALS = ["parent", "parents", "baby", "kids", "pregnancy", "pregnant", "health", "patient", "caregiver", "dementia", "alzheimer", "medication", "meds", "wedding", "landlord", "tenant", "pet", "dog", "marriage", "divorce"];
 const FAMILY_SIGNALS = ["parent", "parents", "baby", "kids", "pregnancy", "pregnant", "caregiver", "dementia", "marriage", "divorce"];
 const MONEY_SIGNALS = ["income", "paycheck", "severance", "debt", "salary", "budget", "rent", "mortgage", "investing", "passive income"];
+// Buy/sell/recommerce topics: the watering holes are flipping and declutter
+// communities plus general social — never developer or expert channels.
+const MARKETPLACE_SIGNALS = ["marketplace", "second hand", "secondhand", "preloved", "pre-owned", "preowned", "thrift", "thrifting", "resale", "recommerce", "declutter", "decluttering", "classifieds", "for sale", "buy and sell", "flea market", "car boot", "buy nothing", "freecycle", "vinted", "depop", "ebay", "gumtree", "craigslist", "flipping"];
 // Verified 2026-11-01: no pet sitemap forum survived (PetForums.com
 // Cloudflare-walls its sitemap path; dogforums/catforum/petforums.co.uk/
 // paw-talk all serve stale indexes whose XML files 404; PetCoach is dead;
@@ -830,6 +860,7 @@ export function channelRecsFor(profile: ProfileLike, plan: ExpansionPlan | null)
   const isDev = countSignals(hay, DEV_SIGNALS) >= 2;
   const isCareer = countSignals(hay, CAREER_SIGNALS) >= 2;
   const isLife = countSignals(hay, LIFE_SIGNALS) >= 2;
+  const isCommerce = countSignals(hay, MARKETPLACE_SIGNALS) >= 2;
   const issueHits = countSignals(hay, ISSUE_SIGNALS);
 
   const scores = new Map<string, { score: number; reasons: string[] }>();
@@ -862,7 +893,7 @@ export function channelRecsFor(profile: ProfileLike, plan: ExpansionPlan | null)
     bump("github", issueHits > 0 ? 2 : 1, issueHits > 0 ? "Developers report this pain as GitHub issues." : "Developer audience — adjacent issue talk lives here.");
   } else {
     bump("github", -2, "GitHub issues are bug reports — your people don't report this pain there.");
-    if (!isCareer && !cluster) bump("hackernews", -1, "Hacker News rarely discusses this topic — a long shot unless your plan maps a community there.");
+    if (!isCareer && !isCommerce && !cluster) bump("hackernews", -1, "Hacker News rarely discusses this topic — a long shot unless your plan maps a community there.");
   }
   if (isCareer) {
     bump("hackernews", 1, "Ask HN work threads exist for this kind of pain.");
@@ -872,6 +903,11 @@ export function channelRecsFor(profile: ProfileLike, plan: ExpansionPlan | null)
   if (isLife) {
     bump("bluesky", 1, "Everyday-life talk is common on Bluesky.");
     bump("reddit_poc", 1, "This conversation lives on Reddit most of all — needs your Reddit connection.");
+  }
+  if (isCommerce) {
+    bump("hackernews", 1, "Ask HN threads cover buying/selling used goods and marketplace mechanics — your early adopters read them.");
+    bump("bluesky", 1, "Buy/sell chatter is everyday social talk — it surfaces on Bluesky.");
+    bump("reddit_poc", 1, "Flipping/declutter/thrift subs hold this conversation — needs your Reddit connection.");
   }
   // Stack Exchange earns its place per profile, never by default: people ask
   // exactly this kind of question on the mapped communities — or on none.
@@ -1977,24 +2013,26 @@ export const Actions = {
   // non-technical profile.
   recommendChannels: defineAction({
     request: z.object({ profileId: z.number() }),
-    response: z.object({ status: z.string(), message: z.string(), basedOn: z.string(), recs: z.array(z.object({ channel: z.string(), label: z.string(), fit: z.string(), reasons: z.array(z.string()), needsConnection: z.boolean() })), venues: z.array(z.object({ name: z.string(), where: z.string(), why: z.string(), url: z.string() })) }),
+    response: z.object({ status: z.string(), message: z.string(), basedOn: z.string(), webOk: z.boolean(), recs: z.array(z.object({ channel: z.string(), label: z.string(), fit: z.string(), reasons: z.array(z.string()), needsConnection: z.boolean() })), venues: z.array(z.object({ name: z.string(), where: z.string(), why: z.string(), url: z.string() })) }),
     async handler(ctx, args) {
       const db = ctx.db<typeof schema>();
       const profRows = await db.select().from(schema.profiles).where(eq(schema.profiles.id, args.profileId));
       const profile = profRows[0];
-      if (!profile) return { status: "error", message: "Profile not found.", basedOn: "", recs: [], venues: [] };
+      if (!profile) return { status: "error", message: "Profile not found.", basedOn: "", webOk: false, recs: [], venues: [] };
       const existing = await db.select().from(schema.searchExpansions).where(eq(schema.searchExpansions.profileId, profile.id));
       const latest = existing.sort((a, b) => b.round - a.round)[0];
       let plan: ExpansionPlan | null = null;
       let basedOn = "profile signals (no expansion plan yet — generate one for sharper picks)";
       if (latest) {
-        try {
-          const p = JSON.parse(latest.plan || "{}") as ExpansionPlan;
-          if (p && Array.isArray(p.queries) && p.queries.length) {
-            plan = p;
-            basedOn = `Muse expansion round ${latest.round} + profile signals`;
-          }
-        } catch { /* heuristic-only */ }
+        const p = parseExpansionPlan(latest.plan || "{}");
+        if (p) {
+          plan = p;
+          basedOn = p.queries.length
+            ? `Muse expansion round ${latest.round} + profile signals`
+            : `Muse expansion round ${latest.round} (communities only — re-generate for search queries) + profile signals`;
+        } else {
+          basedOn = "profile signals (the saved plan came back empty — re-generate it for sharper picks)";
+        }
       }
       const { recs } = channelRecsFor(profile, plan);
       // Web venue discovery runs for every profile (cached 2h, one query): real
@@ -2002,8 +2040,10 @@ export const Actions = {
       // verified new forums join the lineup as `forum:<slug>` channels. A
       // failed discovery degrades to static recs — never an error.
       let venues: { name: string; where: string; why: string; url: string }[] = [];
+      let webOk = false;
       try {
         const found = await discoverVenuesFor(profile);
+        webOk = found.webOk;
         mergeDiscovery(recs, found);
         for (const d of found.dynamic) {
           if (recs.some((r) => r.channel === `forum:${d.slug}`)) continue;
@@ -2022,6 +2062,7 @@ export const Actions = {
             ? `No channel stands out for this profile (${basedOn}) — ${poors.join(", ")} deselected as poor fits.`
             : `No channel stands out for this profile (${basedOn}) — all open channels stay selected.`,
         basedOn,
+        webOk,
         recs,
         venues,
       };
