@@ -517,6 +517,23 @@ async function loadLlmSettings(ctx: Ctx): Promise<LlmSettingsRow | null> {
 function llmConfigured(s: LlmSettingsRow | null): boolean {
   return !!s && !!s.apiKey.trim() && !!s.smallModel.trim() && !!s.largeModel.trim();
 }
+// Routing verdicts per key, so a key the API rejected (or the network
+// failed) doesn't pay a slow direct attempt on every call. Direct successes
+// also feed the status pill. Entries expire — a fixed key re-proves itself.
+type RouteVerdict = { route: "direct" | "runtime"; at: number };
+const ROUTE_TTL_MS = 10 * 60 * 1000;
+const routeCache = new Map<string, RouteVerdict>();
+function cachedRoute(apiKey: string): "direct" | "runtime" | null {
+  const hit = routeCache.get(apiKey);
+  if (!hit || Date.now() - hit.at > ROUTE_TTL_MS) return null;
+  return hit.route;
+}
+function rememberRoute(apiKey: string, route: "direct" | "runtime") {
+  routeCache.set(apiKey, { route, at: Date.now() });
+}
+function verifiedDirect(apiKey: string): boolean {
+  return isDirectKey(apiKey) || routeCache.get(apiKey)?.route === "direct";
+}
 async function requireLlm(ctx: Ctx): Promise<LlmSettingsRow | null> {
   const s = await loadLlmSettings(ctx);
   return llmConfigured(s) ? s : null;
@@ -530,17 +547,27 @@ async function runLlm<T>(ctx: Ctx, tier: "small" | "large", task: string, schema
   if (!llmConfigured(s) || !s) return { ok: false, status: "not_configured", message: LLM_SETUP_MESSAGE };
   const model = (tier === "large" ? (s.largeModel || s.smallModel) : (s.smallModel || s.largeModel)).trim();
   if (!model) return { ok: false, status: "not_configured", message: `No ${tier === "large" ? "large" : "small/fast"} Muse model name set in the AI tab.` };
-  // Direct path: a Model API key (LLM|…) calls Muse Spark 1.3 over HTTPS so
-  // the pasted key is actually used. Any other key is served by the workspace
-  // model runtime (the hosted artifact has no direct egress to assume).
-  if (isDirectKey(s.apiKey)) {
+  // Direct path first for ANY saved key — the API itself decides whether the
+  // pasted string works; no prefix gate. An LLM| key that the API rejects
+  // fails closed (never silently stubbed). Any other rejected key falls back
+  // to the workspace model runtime (the local stub, honestly tagged).
+  const forcedDirect = isDirectKey(s.apiKey);
+  if (forcedDirect || cachedRoute(s.apiKey) !== "runtime") {
     const r = await completeViaMetaModel(task, s.apiKey, META_MODEL);
-    if (!r.ok) return { ok: false, status: "error", message: `Direct Muse Spark 1.3 call failed (${r.error}). Check the key and Model API quota — nothing was saved.` };
-    try {
-      return { ok: true, value: schema.parse(r.value) };
-    } catch {
-      return { ok: false, status: "error", message: "Direct Muse Spark 1.3 call returned an unexpected shape — nothing was saved." };
+    if (r.ok) {
+      rememberRoute(s.apiKey, "direct");
+      try {
+        return { ok: true, value: schema.parse(r.value) };
+      } catch {
+        return { ok: false, status: "error", message: "Direct Muse Spark 1.3 call returned an unexpected shape — nothing was saved." };
+      }
     }
+    // An LLM| key the API rejects fails closed — never silently stubbed.
+    if (forcedDirect) return { ok: false, status: "error", message: `Direct Muse Spark 1.3 call failed (${r.error}). Check the key and Model API quota — nothing was saved.` };
+    // Any other rejected key keeps the old behavior: the workspace runtime
+    // serves it (the local stub, honestly tagged). The rejection is already
+    // reported by Test connection and the status pill.
+    if (r.error.startsWith("HTTP 401")) rememberRoute(s.apiKey, "runtime");
   }
   try {
     const value = await ctx.inference.complete(
@@ -1836,7 +1863,7 @@ export const Actions = {
           provider: "muse",
           hasKey: !!(llmRow?.apiKey.trim()),
           keyHint: llmRow?.apiKey.trim() ? `••••${llmRow.apiKey.trim().slice(-4)}` : "",
-          direct: !!(llmRow?.apiKey.trim() && isDirectKey(llmRow.apiKey)),
+          direct: !!(llmRow?.apiKey.trim() && verifiedDirect(llmRow.apiKey)),
           baseUrl: llmRow?.baseUrl ?? "",
           smallModel: llmRow?.smallModel ?? "",
           largeModel: llmRow?.largeModel ?? "",
@@ -2689,32 +2716,36 @@ export const Actions = {
       // Receipt-grade: with a Model API key this makes a REAL direct call and
       // names the model that answered, so the founder (and a judge) sees the
       // exact serving path instead of taking it on faith.
-      // A typed-but-unsaved key tests exactly what is in the box — testing
-      // used to run against the STORED key, so typing a key and hitting Test
-      // tested the old stub and failed no matter what was typed.
+      // Empirical: a typed key is tried against the API itself — testing used
+      // to run against the STORED key (or refuse non-LLM| keys outright), so
+      // typing a key and hitting Test tested the wrong thing no matter what
+      // was typed. No prefix gate: the API's answer is the verdict.
       const typed = args.apiKey.trim();
-      // A typed key that isn't an LLM| key can never work on this machine
-      // (no model runtime) — say so at once without consulting the stored
-      // key, which a failing direct call there would only confuse.
-      if (typed && !isDirectKey(typed)) return { ok: false, status: "stub", message: "That key is not an LLM| key and this machine has no model runtime, so it cannot work here — paste an LLM| key for live Muse Spark 1.3." };
       const s = await loadLlmSettings(ctx);
       const candidate = typed || s?.apiKey || "";
       if (!candidate) return { ok: false, status: "not_configured", message: "No key to test — paste your Muse API key first, then test." };
-      if (isDirectKey(candidate)) {
+      if (typed || isDirectKey(candidate) || cachedRoute(candidate) !== "runtime") {
         const t0 = Date.now();
         const r = await completeViaMetaModel("Connection test: reply with the single word ok.", candidate, META_MODEL);
-        if (!r.ok) return { ok: false, status: "error", message: `Direct ${META_MODEL} call failed (${r.error}). Check the key and Model API quota.` };
-        if (typed) return { ok: true, status: "ok", message: `That key reaches ${META_MODEL} directly in ${((Date.now() - t0) / 1000).toFixed(1)}s — hit Save to activate it.` };
-        // The stored key is real, so any stub-tagged data still on screen is
-        // stale test output — clear it now so live Muse fills the gaps
-        // (phrases re-expand by themselves, waiting leads re-synthesize on
-        // Results).
-        let cleared = "";
-        try {
-          const purge = await Actions.purgeStubData.handler(ctx, {});
-          if (purge.profilesCleared || purge.leadsCleared) cleared = ` ${purge.message}`;
-        } catch { /* purge is best-effort beside a passing test */ }
-        return { ok: true, status: "ok", message: `Direct ${META_MODEL} via Model API answered in ${((Date.now() - t0) / 1000).toFixed(1)}s — the key works and all Muse calls will use it.${cleared}` };
+        if (r.ok) {
+          rememberRoute(candidate, "direct");
+          if (typed) return { ok: true, status: "ok", message: `That key reaches ${META_MODEL} directly in ${((Date.now() - t0) / 1000).toFixed(1)}s — hit Save to activate it.` };
+          // The stored key is real, so any stub-tagged data still on screen
+          // is stale test output — clear it now so live Muse fills the gaps
+          // (phrases re-expand by themselves, waiting leads re-synthesize on
+          // Results).
+          let cleared = "";
+          try {
+            const purge = await Actions.purgeStubData.handler(ctx, {});
+            if (purge.profilesCleared || purge.leadsCleared) cleared = ` ${purge.message}`;
+          } catch { /* purge is best-effort beside a passing test */ }
+          return { ok: true, status: "ok", message: `Direct ${META_MODEL} via Model API answered in ${((Date.now() - t0) / 1000).toFixed(1)}s — the key works and all Muse calls will use it.${cleared}` };
+        }
+        // The API rejected the key (or was unreachable). A typed key and an
+        // LLM| key fail here with the verdict — the stored non-API key falls
+        // through to the runtime test below instead.
+        if (typed || isDirectKey(candidate)) return { ok: false, status: "error", message: `Direct ${META_MODEL} call failed (${r.error}). Check the key and Model API quota — nothing was saved.` };
+        rememberRoute(candidate, "runtime");
       }
       const r = await runLlm(ctx, "small", "Connection test: reply with a short confirmation that you received this.", z.string());
       if (!r.ok) return { ok: false, status: r.status, message: r.message };
@@ -2722,7 +2753,7 @@ export const Actions = {
       // string. Calling that a passed test is a lie that strands founders on
       // stub verdicts — fail it honestly instead.
       if (typeof r.value === "string" && r.value.includes("[local-stub]")) {
-        return { ok: false, status: "stub", message: "That answer came from the offline test stub, not a model — this machine has no model runtime. Enter an LLM| key for live Muse Spark 1.3, then test again." };
+        return { ok: false, status: "stub", message: "That answer came from the offline test stub, not a model — this machine has no model runtime, so only a key the Model API accepts works here. Paste it above and test again." };
       }
       return { ok: true, status: "ok", message: "Workspace model runtime answered — models are picked automatically (fast tier for first passes, large tier for drafts and summaries)." };
     },

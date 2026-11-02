@@ -92,7 +92,9 @@ await call("saveLlmSettings", { apiKey: "LLM|test|secret", founderVoice: "plain"
 const setRows = await db.select().from(schema.llmSettings);
 check(setRows.length === 1 && setRows[0].apiKey === "LLM|test|secret", "settings stay a single row, latest save wins", setRows.map((r) => r.apiKey));
 const typedStub = (await call("testLlmConnection", { apiKey: "local-stub-key" })) as any;
-check(typedStub.ok === false && typedStub.status === "stub", "typed stub key fails honestly without touching the stored key", typedStub);
+check(typedStub.ok === false && typedStub.status === "error", "typed junk key gets the API verdict, never stub-passing", typedStub);
+const bogusDirect = (await call("testLlmConnection", { apiKey: "LLM|bogus|key" })) as any;
+check(bogusDirect.ok === false && typeof bogusDirect.message === "string" && bogusDirect.message.includes("nothing was saved"), "typed bogus direct key fails with the API verdict, never stub-passing", bogusDirect);
 check(((await state()).llm as any).keyHint === "••••cret", "stored key untouched by typed test", null);
 await call("saveLlmSettings", { apiKey: "k-9999", founderVoice: "plain" });
 

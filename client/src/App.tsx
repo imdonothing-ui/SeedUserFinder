@@ -84,7 +84,7 @@ function AiConfigStatus({ llm, onEdit }: { llm?: State["llm"]; onEdit: () => voi
       <span className="rounded-full bg-[var(--accent-bg)] px-2 py-0.5 text-xs font-semibold text-[var(--accent)]">AI configured ✓</span>
       {llm.direct
         ? <span className="rounded-full bg-[var(--green-bg)] px-2 py-0.5 text-xs font-semibold text-[var(--accent)]">Live · Muse Spark 1.3</span>
-        : <span className="rounded-full bg-[var(--amber-bg)] px-2 py-0.5 text-xs font-semibold text-[var(--amber)]">Offline stub — judgments are test data until you enter an LLM| key</span>}
+        : <span className="rounded-full bg-[var(--amber-bg)] px-2 py-0.5 text-xs font-semibold text-[var(--amber)]">Offline stub — judgments are test data until a tested key is saved</span>}
       <span className="text-[var(--dim)]">Muse · key {llm.keyHint || "saved"} · models automatic</span>
       <span className="text-[var(--dim)]">Saved once — you won't be asked again.</span>
       <button type="button" className={btnGhost + " ml-auto"} onClick={onEdit}>Edit AI config</button>
@@ -1134,7 +1134,7 @@ function AiTab({ llm, flash, invalidate }: { llm?: State["llm"]; flash: (m: stri
             ? <span className="rounded-full bg-[var(--accent-bg)] px-2 py-0.5 text-xs font-semibold text-[var(--accent)]">Configured ✓ · Muse · key {llm?.keyHint} · {llm?.direct ? "live" : "offline stub"} · saved — not asked again</span>
             : <span className="rounded-full bg-[var(--amber-bg)] px-2 py-0.5 text-xs font-bold text-[var(--amber)]">Setup required — core flow blocked until Muse is configured</span>}
         </div>
-        <p className="text-sm text-[var(--dim)]">The provider is <strong>Muse</strong> — every AI feature in EarlyProof runs on Muse Spark 1.3, and Muse setup is required before the core flow unlocks. Enter your Muse Model API key here in the app — never in chat. A key starting with <strong>LLM|</strong> calls Muse Spark 1.3 directly; any other key is served by the workspace model runtime. The key is stored server-side for this workspace, used only when you run an AI action, and never displayed again.</p>
+        <p className="text-sm text-[var(--dim)]">The provider is <strong>Muse</strong> — every AI feature in EarlyProof runs on Muse Spark 1.3, and Muse setup is required before the core flow unlocks. Paste your Muse API key here in the app — never in chat. <strong>Test connection</strong> tries exactly what's in the box against Muse Spark 1.3 and tells you plainly whether it works; <strong>Save</strong> activates a working key. The key is stored server-side for this workspace, used only when you run an AI action, and never displayed again.</p>
         <div><label htmlFor="llm-key" className={labelCls}>Muse API key {llm?.hasKey ? `(saved ${llm.keyHint} — leave blank to keep)` : ""}</label><input id="llm-key" aria-label="Muse API key" type="password" autoComplete="off" value={f.apiKey} onChange={set("apiKey")} className={inputCls} placeholder="Your Muse API key" /></div>
         <div><label htmlFor="llm-voice" className={labelCls}>Your voice — how you actually write (drafts are written in this voice)</label><textarea id="llm-voice" aria-label="Founder voice notes" rows={2} value={f.founderVoice} onChange={set("founderVoice")} className={inputCls} placeholder="e.g. Plain and a bit dry. Short sentences. I say 'I built' not 'we're excited to'. Never use emojis or hype words." /></div>
         <div className="flex flex-wrap gap-2">
