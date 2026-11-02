@@ -56,6 +56,14 @@ const SPECS: Spec[] = [
     searchChannels: ["studentdoctor"], expectOpenSubset: ["studentdoctor", "bluesky"], expectCreatedMin: 1,
   },
   {
+    name: "diy", verdict: "feasible", why: "keyless SE API serves home-repair questions, searched live",
+    probes: [
+      { url: "https://api.stackexchange.com/2.3/search/advanced?order=desc&sort=relevance&q=handyman&site=diy&pagesize=3&filter=!nNPvSNPI7A", expect: "sniff", sniff: /"items"/, note: "API returns question items" },
+    ],
+    profile: { productName: "handyman finder", productDesc: "help people find handyman", audience: "homeowners with a repair list", pain: "can't find a reliable handyman for small repairs", workaround: "asking neighbors", keywords: "", coreAction: "" },
+    searchChannels: ["stackexchange"], expectOpenSubset: ["stackexchange", "bluesky"], expectCreatedMin: 1,
+  },
+  {
     name: "brickset", verdict: "infeasible", why: "forum closed (page points at Discord/Facebook); main-site sitemap 404s; forum subdomain dead",
     probes: [
       { url: "https://brickset.com/sitemap.xml", expect: "unusable", note: "serves error page, not a sitemap" },

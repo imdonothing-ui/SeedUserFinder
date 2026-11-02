@@ -131,6 +131,11 @@ const DOMAIN_CLUSTERS: DomainCluster[] = [
     triggers: ["doctor", "doctors", "physician", "physicians", "nurse", "nurses", "medical student", "medical school", "scribe", "clinic", "clinical"],
     terms: ["doctor", "doctors", "physician", "physicians", "nurse", "nurses", "scribe", "patient", "patients", "clinic", "clinical", "residency"],
   },
+  {
+    id: "home", label: "home repair",
+    triggers: ["handyman", "handymen", "plumber", "electrician", "hvac", "remodel", "drywall", "home repair", "contractor"],
+    terms: ["handyman", "handymen", "plumber", "plumbing", "electrician", "hvac", "repair", "repairs", "drywall", "remodel", "remodeling", "renovation", "faucet", "toilet", "contractor"],
+  },
 ];
 
 // LIGHT SAFETY NET (changed after the FirstFeedback live test, 2026-10-28):
@@ -539,6 +544,17 @@ async function requireLlm(ctx: Ctx): Promise<LlmSettingsRow | null> {
   return llmConfigured(s) ? s : null;
 }
 type LlmFail = { ok: false; status: "not_configured" | "error"; message: string };
+// One-level-deeper shape fingerprint for parse failures (keys + first-item
+// shapes, values never included) so a live-model mismatch names its gap.
+function shapeOf(v: unknown, depth = 0): string {
+  if (Array.isArray(v)) return `array[${v.length}]${v.length && depth < 2 ? `<${shapeOf(v[0], depth + 1)}>` : ""}`;
+  if (v !== null && typeof v === "object") {
+    const keys = Object.keys(v).slice(0, 10);
+    if (depth >= 1) return `{${keys.join(",")}}`;
+    return `{${keys.map((k) => `${k}:${shapeOf((v as Record<string, unknown>)[k], depth + 1)}`).join(",").slice(0, 160)}}`;
+  }
+  return typeof v;
+}
 // Runs one bounded Muse task through the workspace's Muse model runtime
 // with a typed schema (the runtime validates the shape). The founder's
 // configured Muse model name for the tier travels with the task.
@@ -558,8 +574,13 @@ async function runLlm<T>(ctx: Ctx, tier: "small" | "large", task: string, schema
       rememberRoute(s.apiKey, "direct");
       try {
         return { ok: true, value: schema.parse(r.value) };
-      } catch {
-        return { ok: false, status: "error", message: "Direct Muse Spark 1.3 call returned an unexpected shape — nothing was saved." };
+      } catch (e) {
+        // Name the exact gap (paths only, never values) so a live-model
+        // mismatch is actionable instead of a shrug.
+        const gap = e instanceof z.ZodError
+          ? e.issues.map((i) => `${i.path.length ? i.path.join(".") : "(root)"}: ${i.message}`).join("; ").slice(0, 200)
+          : shapeOf(r.value);
+        return { ok: false, status: "error", message: `Direct Muse Spark 1.3 call returned an unexpected shape (${gap}) — nothing was saved.` };
       }
     }
     // An LLM| key the API rejects fails closed — never silently stubbed.
@@ -624,7 +645,7 @@ async function classifyForProfile(ctx: Ctx, profile: typeof schema.profiles.$inf
     const items = batch.map((l, j) => `--- POST ${j + 1} (id ${l.id}, channel ${l.channel}) ---\nTitle: ${l.title}\n${l.body.slice(0, 700)}`).join("\n");
     const r = await runLlm(ctx, "small",
       `Classify candidate seed users for a founder. The light pre-filter already confirmed a domain anchor from the profile is present in the post, plus a pain or workaround signal (or the post was a top anchored candidate passed up for your judgement) — that filter is only a safety net, NOT a relevance verdict: your classification is the real gate, so judge strictly and mark anchor-only showcases, ads and jokes irrelevant with low confidence. Your job is the judgement keywords can't do. For EACH post, return one result with its post id and judge: rightPerson (is this the target audience, in the situation described?), realPain (did they describe this pain in their own words, as their own current problem?), workaroundOrPaying (are they already hacking a workaround or paying for something imperfect?), recent (does it read as current/recent, not an old or hypothetical story?). category is one of: seed_user (right person + real pain), curious (interested or adjacent but no clear own pain), irrelevant (wrong person, selling something, joke, or not this pain). confidence is 0-100 — be honest: ambiguous posts get low confidence. Show HN launch announcements and founder pitches are irrelevant unless the author personally asks for help with this pain in their own words — describing a market problem ("difficult for young investors", "high entry barrier") is not the author's own pain. Some candidates come from forum thread titles only (no post body) — judge on the title alone; prefer curious unless the title itself shows the person's own pain. The quote MUST be copied word-for-word from the post; if no phrase supports the pain, use an empty string and lower the confidence. reason: one short sentence grounded in the post. Never invent a quote. Only the public post text follows — no personal data beyond what the person posted.\nTarget profile — Audience: ${profile.audience}\nPain: ${profile.pain}\nWorkaround today: ${profile.workaround}\nProduct: ${profile.productName} — ${profile.productDesc}\n\n${items}`,
-      z.object({ results: z.array(z.object({ id: z.number(), category: z.string(), confidence: z.number(), reason: z.string(), quote: z.string(), rightPerson: z.boolean(), realPain: z.boolean(), workaroundOrPaying: z.boolean(), recent: z.boolean() })) }));
+      z.object({ results: z.array(z.object({ id: z.number(), category: z.string().default("curious"), confidence: z.number().default(0), reason: z.string().default(""), quote: z.string().default(""), rightPerson: z.boolean().default(false), realPain: z.boolean().default(false), workaroundOrPaying: z.boolean().default(false), recent: z.boolean().default(false) })).default([]) }));
     if (!r.ok) { return { status: r.status, message: `${r.message} (${classified} lead${classified === 1 ? "" : "s"} classified before this batch.)`, classified, cached, lowConfidence, needsReview }; }
     for (const o of r.value.results) {
       const lead = batch.find((l) => l.id === o.id);
@@ -894,6 +915,11 @@ const MARKETPLACE_SIGNALS = ["marketplace", "second hand", "secondhand", "prelov
 // VetInfo is 9k static articles, not threads). Pets live on Stack Exchange
 // plus whatever web discovery finds per profile.
 const PET_SIGNALS = ["pet", "pets", "dog", "dogs", "puppy", "puppies", "cat", "cats", "kitten", "kittens", "pet food", "dog food", "cat food", "kibble", "vet", "veterinarian", "pet owner", "dog owner", "cat owner", "breed", "breeder"];
+// Home services: homeowners with repair pain talk on DIY Stack Exchange
+// (api.stackexchange.com site=diy, keyless — verified live 2026-11-02).
+// Thumbtack/Angi/Yelp are business directories without thread search;
+// Nextdoor and Facebook groups are closed — all stay venues, never channels.
+const HOME_SIGNALS = ["handyman", "handymen", "plumber", "plumbers", "plumbing", "electrician", "electricians", "hvac", "remodel", "remodeling", "renovation", "drywall", "home repair", "home improvement", "contractor", "faucet", "water heater", "repair", "repairs"];
 
 function countSignals(normHaystack: string, signals: string[]): number {
   let n = 0;
@@ -1008,6 +1034,7 @@ export function stackSitesFor(profile: ProfileLike): string[] {
   if (countSignals(hay, FAMILY_SIGNALS) >= 2) sites.push("parenting");
   if (countSignals(hay, MONEY_SIGNALS) >= 2) sites.push("money");
   if (countSignals(hay, PET_SIGNALS) >= 2) sites.push("pets");
+  if (countSignals(hay, HOME_SIGNALS) >= 2) sites.push("diy");
   return [...new Set(sites)].slice(0, 2);
 }
 
@@ -1385,15 +1412,34 @@ function queryIsAnchored(query: string, terms: string[]): boolean {
   return terms.some((t) => t && containsTerm(nq, t));
 }
 
+// Live models sometimes return a small object where the prompt's shorthand
+// implied a string (e.g. a relaxation as {term, relaxTo}). Coerce those to a
+// readable single string instead of failing the whole call.
+export function stringishArray(v: unknown): string[] {
+  if (!Array.isArray(v)) return [];
+  const out: string[] = [];
+  for (const x of v) {
+    if (typeof x === "string") { if (x.trim()) out.push(x); continue; }
+    if (x && typeof x === "object") {
+      const o = x as Record<string, unknown>;
+      const parts = [o.term, o.relaxTo, o.text, o.phrase, o.suggestion, o.move, o.name].filter((s): s is string => typeof s === "string" && !!s.trim());
+      if (parts.length) out.push(parts.join(" → "));
+    }
+  }
+  return out;
+}
 const expansionPlanSchema = z.object({
   anchorTerm: z.string(),
-  queries: z.array(z.object({ query: z.string(), intent: z.string() })),
-  painPhrases: z.array(z.string()),
-  adjacentProblems: z.array(z.string()),
-  adjacentAudiences: z.array(z.string()),
-  communities: z.array(z.object({ name: z.string(), where: z.string(), channel: z.string(), access: z.string(), why: z.string() })),
-  relaxations: z.array(z.string()),
-  nextSuggestions: z.array(z.string()),
+  // Only the load-bearing fields are required: the cleaning step below
+  // normalizes or drops the rest, so a live model omitting a cosmetic field
+  // (or a whole optional array) degrades the plan instead of nuking it.
+  queries: z.array(z.object({ query: z.string(), intent: z.string().default("") })).default([]),
+  painPhrases: z.preprocess(stringishArray, z.array(z.string())).default([]),
+  adjacentProblems: z.preprocess(stringishArray, z.array(z.string())).default([]),
+  adjacentAudiences: z.preprocess(stringishArray, z.array(z.string())).default([]),
+  communities: z.array(z.object({ name: z.string(), where: z.string().default(""), channel: z.string().default("manual"), access: z.string().default("open"), why: z.string().default("") })).default([]),
+  relaxations: z.preprocess(stringishArray, z.array(z.string())).default([]),
+  nextSuggestions: z.preprocess(stringishArray, z.array(z.string())).default([]),
 });
 
 // Generates one expansion round with Muse and stores it. `previous` carries
@@ -2253,7 +2299,7 @@ export const Actions = {
       const channelRules = lead.channel === "bluesky" ? "Bluesky: keep it under 280 characters, conversational, no hashtag spam." : lead.channel === "reddit_poc" || lead.channel === "reddit" ? "Reddit: respect community norms — no link dump on first touch, no hype, disclose that you built it." : lead.channel === "github" ? "GitHub: be brief and technical, acknowledge their issue specifically, never spam maintainers." : "Closed/DM channel: extra care — they didn't ask to be contacted; be short, easy to decline, no pressure.";
       const r = await runLlm(ctx, "large",
         `Write a first outreach message for a founder, then check your own work in the toneCheck field: one or two plain sentences on whether the draft sounds like a genuine founder asking for help (not a pitch blast or a template), whether it follows the channel rules, and anything the founder should fix before approving. You never post anything yourself.\nFounder voice notes (write in this voice): ${voice || "plain, honest, first person, no marketing language"}\nChannel: ${lead.channel}. Channel rules: ${channelRules}\nRules for the draft: reference their specific post in their own words; say plainly the founder built something for this exact problem; ask for help trying it for one real task — a request for help, not a pitch; no link dump; under 90 words unless the channel rule above is stricter.\nProduct: ${p.productName} — ${p.productDesc}\nPain it addresses: ${p.pain}\nTheir post (by ${lead.author}): Title: ${lead.title}\n${lead.body.slice(0, 900)}`,
-        z.object({ draft: z.string(), toneCheck: z.string() }));
+        z.object({ draft: z.string(), toneCheck: z.string().default("") }));
       if (!r.ok) return { draft: lead.draftBody, toneCheck: r.status === "not_configured" ? LLM_SETUP_MESSAGE : `${r.message} No fallback draft was substituted — draft generation is a Muse step. Fix the Muse connection and try again.`, llmStatus: r.status };
       if (!r.value.draft.trim()) return { draft: lead.draftBody, toneCheck: "Your large Muse model didn't return a usable draft, so nothing was saved. Try again — no template draft is substituted.", llmStatus: "error" };
       const draft = r.value.draft.trim();
@@ -2808,7 +2854,7 @@ export const Actions = {
       if (!p) return { status: "error", message: "Profile not found.", ...empty };
       const r = await runLlm(ctx, "small",
         `Expand a founder's plain problem description into the language real people use when they complain about that problem in public posts. painPhrases: 8-12 short first-person phrases people actually type when they hit this pain (their words, frustrations, symptoms — not marketing copy). workaroundPhrases: 5-8 phrases describing the hacks, tools and imperfect substitutes they mention. exclusions: 4-8 words or short phrases that signal a post is NOT this pain (adjacent topics, professionals selling services, jokes/memes) so search can filter them out.\nProduct: ${p.productName} — ${p.productDesc}\nAudience: ${p.audience}\nPain (founder's words): ${p.pain}\nWorkaround today: ${p.workaround}\nCurrent keywords: ${p.keywords}`,
-        z.object({ painPhrases: z.array(z.string()), workaroundPhrases: z.array(z.string()), exclusions: z.array(z.string()) }));
+        z.object({ painPhrases: z.preprocess(stringishArray, z.array(z.string())).default([]), workaroundPhrases: z.preprocess(stringishArray, z.array(z.string())).default([]), exclusions: z.preprocess(stringishArray, z.array(z.string())).default([]) }));
       if (!r.ok) return { status: r.status, message: r.message, ...empty };
       const arr = (v: string[]) => v.filter((x) => !!x.trim()).map((x) => x.trim()).slice(0, 14);
       const painPhrases = arr(r.value.painPhrases); const workaroundPhrases = arr(r.value.workaroundPhrases); const exclusions = arr(r.value.exclusions);
@@ -2904,7 +2950,7 @@ export const Actions = {
       const joined = entries.map((e, i) => `--- FEEDBACK ${i + 1}${e.seedName ? ` from ${e.seedName}` : ""}${e.source ? ` (${e.source})` : ""} ---\n${e.rawText}`).join("\n");
       const r = await runLlm(ctx, "large",
         `Summarise seed-user feedback for a founder WITHOUT inventing anything. Cluster only what people actually said. Every quote MUST be copied word-for-word from the feedback — never paraphrase a quote, never merge two people's words into one quote, never add a sentiment nobody expressed. If a cluster has no exact quote, leave its quotes empty rather than inventing one. stuckPoints and requests are short factual notes grounded in the text. repeatedPainLanguage: exact phrases that recur across people. followUpQuestions: 3-5 specific questions the founder should ask next, each tied to something a user actually said or got stuck on — questions that find friction, not praise.\nProduct: ${p.productName} — ${p.productDesc}\nCore action: ${p.coreAction}\n\n${joined.slice(0, 9000)}`,
-        z.object({ clusters: z.array(z.object({ theme: z.string(), quotes: z.array(z.string()), stuckPoints: z.array(z.string()), requests: z.array(z.string()) })), repeatedPainLanguage: z.array(z.string()), followUpQuestions: z.array(z.string()) }));
+        z.object({ clusters: z.array(z.object({ theme: z.string().default(""), quotes: z.array(z.string()).default([]), stuckPoints: z.array(z.string()).default([]), requests: z.array(z.string()).default([]) })).default([]), repeatedPainLanguage: z.array(z.string()).default([]), followUpQuestions: z.array(z.string()).default([]) }));
       if (!r.ok) return { status: r.status, message: r.message };
       const o = r.value;
       // Quote integrity pass: drop any 'quote' that is not verbatim in the source feedback.
@@ -2952,7 +2998,7 @@ export const Actions = {
       // be written by the founder's Muse model.
       const r = await runLlm(ctx, "small",
         `Suggest ONE next experiment for a founder from cohort signals. Hard rules: you must NOT give a PMF score, a PMF verdict, or say whether they have product-market fit — the founder decides that. You must keep the lever you are given (audience, message, or problem) — the order is fixed. Write the experiment as one concrete paragraph: what to change, who it runs on, for how long, and which signal to watch. Ground it in the numbers given.\nLever (fixed): ${lever}\nWhy this lever: ${rationale}\nSignals: ${JSON.stringify(signals)}\nProfile: audience ${p.audience}; pain ${p.pain}; core action ${p.coreAction}\nLatest feedback summary (may be empty): ${latestFb.slice(0, 1500)}`,
-        z.object({ experiment: z.string() }));
+        z.object({ experiment: z.string().default("") }));
       if (!r.ok) return { status: r.status, message: r.status === "not_configured" ? LLM_SETUP_MESSAGE : `${r.message} No rule-based suggestion was substituted — next-experiment suggestions are a Muse step.`, source: "" };
       if (!r.value.experiment.trim()) return { status: "error", message: "Your Muse model didn't return a usable experiment, so nothing was saved. Try again.", source: "" };
       const experiment = r.value.experiment.trim();

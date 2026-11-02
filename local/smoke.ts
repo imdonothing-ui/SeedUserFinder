@@ -7,7 +7,7 @@ import { Database } from "bun:sqlite";
 import { eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/bun-sqlite";
 import { complete } from "./inference-stub.ts";
-import { Actions, analyseText, shouldRetryFetch, matchVariant, synonymsFor, sitemapLocs, slugTitleFor, sitemapForumsFor, filterSitemapLocs, sitemapCandidate, channelRecsFor, stackSitesFor, seCandidate, devtoTagsFor, lobstersFor, devtoCandidate, lobstersCandidate, ddgResults, groupVenues, mergeDiscovery, dynamicForumFor, parseExpansionPlan, profileSignature } from "../server/src/actions.ts";
+import { Actions, analyseText, shouldRetryFetch, matchVariant, synonymsFor, sitemapLocs, slugTitleFor, sitemapForumsFor, filterSitemapLocs, sitemapCandidate, channelRecsFor, stackSitesFor, seCandidate, devtoTagsFor, lobstersFor, devtoCandidate, lobstersCandidate, ddgResults, groupVenues, mergeDiscovery, dynamicForumFor, parseExpansionPlan, profileSignature, stringishArray } from "../server/src/actions.ts";
 import { META_MODEL, buildResponsesRequest, extractJsonValue, extractResponseText, isDirectKey, completeViaMetaModel } from "../server/src/meta-api.ts";
 import { GATE_CORPUS, WILLOW, SECONDHIFT, DEV, MAKEUP, DAWNLITE } from "./gate-corpus.ts";
 import * as schema from "../server/src/schema.ts";
@@ -233,6 +233,16 @@ check(!!channelRecsFor(DOC, null).recs.find((r) => r.channel === "studentdoctor"
 const DOC_KIN = { ...DOC, pain: "notes eat hours after clinic, kids screaming, no sleep" };
 check(channelRecsFor(DOC_KIN, null).recs.find((r) => r.channel === "mumsnet")?.fit === "poor", "medical cluster vetoes kin-only parenting-forum mapping", null);
 check(!sitemapForumsFor(MAKEUP).some((f) => f.channel === "studentdoctor") && !sitemapForumsFor(DEV).some((f) => f.channel === "studentdoctor") && !sitemapForumsFor(WILLOW).some((f) => f.channel === "studentdoctor"), "studentdoctor stays dark for non-doctor profiles", null);
+// Home services (verified live via api.stackexchange.com site=diy, keyless):
+// homeowners with repair pain talk on DIY SE — a handyman profile must earn
+// Stack Exchange, not sit on Bluesky alone.
+const HOME = { productName: "handyman finder", productDesc: "help people find handyman", audience: "homeowners with a repair list", pain: "can't find a reliable handyman for small repairs", workaround: "asking neighbors", keywords: "", coreAction: "" };
+check(JSON.stringify(stackSitesFor(HOME)) === JSON.stringify(["diy"]), "handyman fixture maps DIY Stack Exchange", stackSitesFor(HOME));
+check(!!channelRecsFor(HOME, null).recs.find((r) => r.channel === "stackexchange" && r.fit === "best"), "handyman: Stack Exchange best alongside Bluesky", null);
+const HOME_KIN = { ...HOME, pain: "repairs piling up, kids screaming, no sleep" };
+check(channelRecsFor(HOME_KIN, null).recs.find((r) => r.channel === "mumsnet")?.fit === "poor", "home cluster vetoes kin-only parenting-forum mapping", null);
+check(!stackSitesFor(MAKEUP).includes("diy") && !stackSitesFor(DEV).includes("diy") && !stackSitesFor(WILLOW).includes("diy") && !stackSitesFor(SECONDHIFT).includes("diy"), "diy stays dark for non-home profiles", null);
+check(JSON.stringify(stringishArray(["a", { term: "b", relaxTo: "c" }, 42, null, { unrelated: 1 }])) === JSON.stringify(["a", "b → c"]), "object relaxations coerce to readable strings, junk drops", null);
 // A profile's hunt belongs to its exact words: new/edited text gets a fresh
 // hunt, untouched text keeps its plan — never another profile's channels.
 const SIG_A = { productName: "Second hand market place", productDesc: "sell second hand stuff", audience: "buyers", pain: "no buyers", workaround: "", keywords: "", coreAction: "" };

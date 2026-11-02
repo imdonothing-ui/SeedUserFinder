@@ -487,6 +487,11 @@ function SearchTab({ profile, expansions, llmConfigured, connections, channels, 
     ? openRecs.map((r) => ({ channel: r.channel, label: `${r.label} · ${descriptorFor(r.channel)}`, fit: r.fit }))
     : [];
   const shownOpts = lineup.filter((o) => o.fit !== "poor");
+  // Show-your-work disclosure: open picks carry their full reasons, ruled-out
+  // channels carry the veto that dropped them. Same data as the pills.
+  const [showWhy, setShowWhy] = useState(false);
+  const picked = openRecs.filter((o) => o.fit !== "poor");
+  const ruledOut = openRecs.filter((o) => o.fit === "poor");
   // Muse's plan plus web discovery name places EarlyProof cannot search
   // (subreddits, Discords, hashtags): shown as venues to join by hand,
   // never as channels.
@@ -584,6 +589,31 @@ function SearchTab({ profile, expansions, llmConfigured, connections, channels, 
           </div>
           {recMessage && <p className="mt-2 text-xs text-[var(--dim)]">{recMessage} Hover a channel for why.</p>}
         </fieldset>
+        <div className="mt-3">
+          <button type="button" className={btnGhost} aria-expanded={showWhy} onClick={() => setShowWhy((v) => !v)}>{showWhy ? "Hide how this lineup was picked" : "How this lineup was picked"}</button>
+          {showWhy && (
+            <div className="mt-2 space-y-2 text-sm">
+              <p className="text-[var(--dim)]">Fresh hunt for this profile, recounted on every visit — your words voted{planUsable ? ", Muse's plan voted" : ", no usable plan yet"} {webOk ? "and the web check voted." : "but the web check was throttled, so web evidence is missing."}</p>
+              {picked.length > 0 && (
+                <ul className="space-y-1.5">
+                  {picked.map((o) => (
+                    <li key={o.channel}><span className="font-semibold">✓ {o.label}</span><span className="text-[var(--dim)]"> — {recReasons[o.channel] ?? o.label}</span></li>
+                  ))}
+                </ul>
+              )}
+              {ruledOut.length > 0 && (
+                <div>
+                  <p className="font-semibold">Ruled out</p>
+                  <ul className="mt-1 space-y-1">
+                    {ruledOut.map((o) => (
+                      <li key={o.channel} className="text-[var(--dim)]">× {o.label} — {(recReasons[o.channel] ?? "no fit").split(" · ")[0]}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
         {elseTalk.length > 0 && (
           <div className="mt-3 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface-alt)] p-3">
             <h3 className="font-serif text-base font-bold">Where else they talk</h3>
