@@ -107,7 +107,7 @@ await call("saveLlmSettings", { apiKey: "k-9999", founderVoice: "plain" });
 
 // 2b. Direct Muse Spark path: key routing, request shape, response reading,
 // and fail-closed behavior with a bogus key (no real key ever needed).
-check(META_MODEL === "muse-spark-1.3", "model pinned to muse-spark-1.3", META_MODEL);
+check(META_MODEL === "muse-spark-1.3-contributor", "model pinned to muse-spark-1.3-contributor", META_MODEL);
 check(
   isDirectKey("LLM|123|abc") === true && isDirectKey("  LLM|x") === true && isDirectKey("k-9999") === false,
   "LLM| keys route direct, others use the runtime",
@@ -116,7 +116,7 @@ const req = buildResponsesRequest("hello", "LLM|1|secret");
 check(
   req.url === "https://api.meta.ai/v1/responses" &&
   req.headers.Authorization === "Bearer LLM|1|secret" &&
-  (JSON.parse(req.body) as any).model === "muse-spark-1.3",
+  (JSON.parse(req.body) as any).model === "muse-spark-1.3-contributor",
   "responses request: endpoint, bearer auth, pinned model",
 );
 check(

@@ -1,11 +1,17 @@
-// Direct Meta Model API path (Muse Spark 1.3). The hosted artifact serves
-// Muse calls through the workspace model runtime (ctx.inference); on
-// localhost — and anywhere with egress — a founder key shaped like a Model
-// API key (`LLM|…`) calls https://api.meta.ai/v1 directly instead, so the
-// key pasted in AI setup is actually used. Verified against the live API
-// (bogus key → HTTP 401: endpoint, model id, and auth scheme all real).
+// Direct Meta Model API path (Muse Spark 1.3, Contributor tier). The hosted
+// artifact serves Muse calls through the workspace model runtime
+// (ctx.inference); on localhost — and anywhere with egress — a saved key is
+// tried against https://api.meta.ai/v1 directly first, so the key pasted in
+// AI setup is actually used. `LLM|…` keys fail closed on rejection; anything
+// else falls back to the runtime. Verified against the live API (bogus key
+// → HTTP 401: endpoint, model id, and auth scheme all real).
 
-export const META_MODEL = "muse-spark-1.3";
+// Pinned model (verified in the Model API docs): the Contributor tier of
+// Muse Spark 1.3 — same capabilities at Contributor pricing, chosen by model
+// ID. Tradeoff, stated plainly: Contributor-mode content may train future
+// Meta models. Contributor also lacks the "max" reasoning effort level,
+// which this app never requests (no effort parameter is ever sent).
+export const META_MODEL = "muse-spark-1.3-contributor";
 const META_API_BASE = "https://api.meta.ai/v1";
 const DIRECT_TIMEOUT_MS = 90000;
 
