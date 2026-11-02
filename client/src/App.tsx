@@ -63,7 +63,6 @@ function LlmSetupGate({ onGoSettings }: { onGoSettings: () => void }) {
 
 // Open channels searched by default: public, searchable, no founder
 // connection needed. Closed channels are never in this default list.
-const OPEN_DEFAULTS = ["bluesky", "hackernews", "github", "stackexchange", "agingcare", "mumsnet", "makeuptalk", "lipstickalley", "devto", "lobsters"];
 
 // Plain-words result narration shared by search and expand-and-rerun.
 function describeSearch(r: { found: number; created: number; discarded: number; pruned: number; promoted: number; synthesized: number; synthesisStatus: string; synthesisMessage: string; errors: { channel: string; message: string }[]; expansionRound: number; expansionAnchor: string; expansionQueries: string[]; nextSuggestions: string[] }, expanded: boolean, isFirstFeedback: boolean) {
@@ -126,7 +125,10 @@ export function App() {
   const [notice, setNotice] = useState("");
   // Search-panel state lives here so it survives tab switches: toggling a
   // channel, running a search, then checking Results must not reset it.
-  const [channels, setChannels] = useState<string[]>(OPEN_DEFAULTS);
+  // It is ALWAYS rebuilt from the active profile — never inherited, never
+  // generic: channels start empty and recs fill them; switching profiles
+  // wipes channels, subs, run and result together (see reset below).
+  const [channels, setChannels] = useState<string[]>([]);
   const [subs, setSubs] = useState("");
   const [sortByScore, setSortByScore] = useState(true);
   const [runId, setRunId] = useState(0);
@@ -149,25 +151,28 @@ export function App() {
   // (Below the profile derivation — it reads activeProfile.)
   const [recsAppliedKey, setRecsAppliedKey] = useState("");
   const channelsTouched = useRef(false);
-  useEffect(() => { setRecsAppliedKey(""); channelsTouched.current = false; setChannels(OPEN_DEFAULTS); }, [activeProfile?.id]);
+  useEffect(() => {
+    setRecsAppliedKey(""); channelsTouched.current = false;
+    setChannels([]); setSubs(""); setRunId(0); setLastSearch(null); setSearchResult("");
+  }, [activeProfile?.id]);
   const recQ = useQuery({ queryKey: ["recs", activeProfile?.id ?? 0], queryFn: () => api.recommendChannels({ profileId: activeProfile?.id ?? 0 }), enabled: !!activeProfile });
   useEffect(() => {
     if (!recQ.data || recQ.data.status !== "ok") return;
     const key = `${activeProfile?.id ?? 0}:${recQ.data.basedOn ?? ""}`;
     if (recsAppliedKey === key || channelsTouched.current) return;
     const open = recQ.data.recs.filter((r) => !r.needsConnection && r.fit !== "poor").map((r) => r.channel);
-    setChannels(open.length ? open : OPEN_DEFAULTS);
+    // No generic fallback: if nothing fits, the founder sees zero channels
+    // and the rec message says so — never a reused default lineup.
+    setChannels(open);
     setRecsAppliedKey(key);
   }, [recQ.data, recsAppliedKey]);
   const recReasons: Record<string, string> = {};
-  const recFit: Record<string, string> = {};
   const openRecs: { channel: string; label: string; fit: string }[] = [];
   for (const r of recQ.data?.recs ?? []) {
     recReasons[r.channel] = r.reasons.join(" · ");
-    recFit[r.channel] = r.fit;
     if (!r.needsConnection) openRecs.push({ channel: r.channel, label: r.label, fit: r.fit });
   }
-  const recVenues: { name: string; where: string; why: string }[] = recQ.data?.venues ?? [];
+  const recVenues: { name: string; where: string; why: string; url: string }[] = recQ.data?.venues ?? [];
   const recMessage = recQ.data?.status === "ok" ? recQ.data.message : "";
 
   // Recs read the latest expansion plan, so anything that can create a plan
@@ -230,7 +235,7 @@ export function App() {
         {activeProfile && !llm?.configured && tab !== "settings" && tab !== "profile" && <LlmSetupGate onGoSettings={() => setTab("settings")} />}
 
         {tab === "profile" && <ProfileTab profiles={profiles} activeProfile={activeProfile} onSelect={(id) => setProfileId(id)} onDone={(id) => { if (id) { setProfileId(id); setTab("search"); } invalidate(); }} llm={llm} flash={flash} invalidate={invalidate} />}
-        {llm?.configured && activeProfile && tab === "search" && <SearchTab profile={activeProfile} expansions={(data?.expansions ?? []).filter((x) => x.profileId === activeProfile.id)} llmConfigured={!!llm?.configured} connections={data?.connections ?? []} channels={channels} setChannels={(c) => { channelsTouched.current = true; setChannels(c); }} subs={subs} setSubs={setSubs} recReasons={recReasons} recFit={recFit} openRecs={openRecs} recVenues={recVenues} recsReady={!!recQ.data} recMessage={recMessage} runId={runId} setRunId={setRunId} setLastSearch={setLastSearch} result={searchResult} setResult={setSearchResult} onGoSettings={() => setTab("settings")} onDone={() => setTab("results")} flash={flash} invalidate={invalidate} />}
+        {llm?.configured && activeProfile && tab === "search" && <SearchTab profile={activeProfile} expansions={(data?.expansions ?? []).filter((x) => x.profileId === activeProfile.id)} llmConfigured={!!llm?.configured} connections={data?.connections ?? []} channels={channels} setChannels={(c) => { channelsTouched.current = true; setChannels(c); }} subs={subs} setSubs={setSubs} recReasons={recReasons} openRecs={openRecs} recVenues={recVenues} recsReady={!!recQ.data} recMessage={recMessage} runId={runId} setRunId={setRunId} setLastSearch={setLastSearch} result={searchResult} setResult={setSearchResult} onGoSettings={() => setTab("settings")} onDone={() => setTab("results")} flash={flash} invalidate={invalidate} />}
         {llm?.configured && activeProfile && tab === "results" && <ResultsTab profile={activeProfile} leads={leads} expansions={(data?.expansions ?? []).filter((x) => x.profileId === activeProfile.id)} llmConfigured={!!llm?.configured} channels={channels} subs={subs} sortByScore={sortByScore} setSortByScore={setSortByScore} lastSearch={lastSearch} setLastSearch={setLastSearch} setRunId={setRunId} flash={flash} invalidate={invalidate} />}
         {llm?.configured && activeProfile && tab === "tracker" && <TrackerTab leads={leads} profile={activeProfile} followups={(data?.followups ?? []).filter((f) => f.profileId === activeProfile.id)} flash={flash} invalidate={invalidate} />}
         {llm?.configured && activeProfile && tab === "cohort" && <CohortTab profile={activeProfile} leads={leads} invites={invites} events={events} feedback={feedback} summaries={summaries} llmConfigured={!!llm?.configured} posthog={data?.posthog.find((p) => p.profileId === activeProfile.id)} flash={flash} invalidate={invalidate} />}
@@ -403,8 +408,6 @@ function ProfileTab({ profiles, activeProfile, onSelect, onDone, llm, flash, inv
 
 /* Search is input only: pick channels, press the one big button, watch it
    work. Matches appear on the Results tab, which opens automatically. */
-const OPEN_OPTS: [string, string][] = [["bluesky", "Bluesky · public search"], ["hackernews", "Hacker News · public search"], ["github", "GitHub · public search"], ["stackexchange", "Stack Exchange · public Q&A"], ["agingcare", "AgingCare · forum threads"], ["mumsnet", "Mumsnet · forum threads"], ["makeuptalk", "MakeupTalk · forum threads"], ["lipstickalley", "Lipstick Alley · forum threads"], ["devto", "Dev.to · articles"], ["lobsters", "Lobsters · dev discussion"]];
-
 const CH_DESCRIPTOR: Record<string, string> = {
   bluesky: "public search", hackernews: "public search", github: "public search",
   stackexchange: "public Q&A", agingcare: "forum threads", mumsnet: "forum threads",
@@ -414,10 +417,10 @@ function descriptorFor(ch: string): string {
   return CH_DESCRIPTOR[ch] ?? (ch.startsWith("forum:") ? "forum threads" : "public search");
 }
 
-function SearchTab({ profile, expansions, llmConfigured, connections, channels, setChannels, subs, setSubs, recReasons, recFit, openRecs, recVenues, recsReady, recMessage, runId, setRunId, setLastSearch, result, setResult, onGoSettings, onDone, flash, invalidate }: {
+function SearchTab({ profile, expansions, llmConfigured, connections, channels, setChannels, subs, setSubs, recReasons, openRecs, recVenues, recsReady, recMessage, runId, setRunId, setLastSearch, result, setResult, onGoSettings, onDone, flash, invalidate }: {
   profile: Profile; expansions: State["expansions"]; llmConfigured: boolean; connections: State["connections"];
   channels: string[]; setChannels: (c: string[] | ((v: string[]) => string[])) => void; subs: string; setSubs: (s: string) => void;
-  recReasons: Record<string, string>; recFit: Record<string, string>; openRecs: { channel: string; label: string; fit: string }[]; recVenues: { name: string; where: string; why: string }[]; recsReady: boolean; recMessage: string; runId: number; setRunId: (id: number) => void;
+  recReasons: Record<string, string>; openRecs: { channel: string; label: string; fit: string }[]; recVenues: { name: string; where: string; why: string; url: string }[]; recsReady: boolean; recMessage: string; runId: number; setRunId: (id: number) => void;
   setLastSearch: (s: { found: number; created: number; synthesized: number } | null) => void;
   result: string; setResult: (s: string) => void;
   onGoSettings: () => void; onDone: () => void; flash: (m: string) => void; invalidate: () => void;
@@ -436,18 +439,19 @@ function SearchTab({ profile, expansions, llmConfigured, connections, channels, 
   const redditConnected = !!connections.find((c) => c.channel === "reddit_poc")?.connected;
   const latestExpansion = [...expansions].sort((a, b) => b.round - a.round)[0];
   const plan: ExpansionPlanData | null = latestExpansion ? parsePlan(latestExpansion.plan) : null;
-  // Pills come from the server lineup (dynamic `forum:` ids included); before
-  // recs land, the static defaults stand in.
+  // Pills come ONLY from the server lineup (dynamic `forum:` ids included).
+  // Before recs land there are no pills — only the finding line below.
+  // Nothing generic is ever assumed or reused across profiles.
   const lineup = openRecs.length
     ? openRecs.map((r) => ({ channel: r.channel, label: `${r.label} · ${descriptorFor(r.channel)}`, fit: r.fit }))
-    : OPEN_OPTS.map(([v, label]) => ({ channel: v, label, fit: recFit[v] as string | undefined }));
+    : [];
   const shownOpts = lineup.filter((o) => o.fit !== "poor");
   // Muse's plan plus web discovery name places EarlyProof cannot search
   // (subreddits, Discords, hashtags): shown as venues to join by hand,
   // never as channels.
   const elseTalk = (() => {
     const seen = new Set<string>();
-    const out: { name: string; where: string; why: string; access: string }[] = [];
+    const out: { name: string; where: string; why: string; access: string; url?: string }[] = [];
     for (const c of plan?.communities ?? []) {
       if (!c.name || EXECUTABLE.has(c.channel) || channels.includes(c.channel)) continue;
       const k = `${c.name} ${c.where || ""}`.toLowerCase();
@@ -459,7 +463,7 @@ function SearchTab({ profile, expansions, llmConfigured, connections, channels, 
       const k = `${v.name} ${v.where}`.toLowerCase();
       if (seen.has(k)) continue;
       seen.add(k);
-      out.push({ name: v.name, where: v.where, why: v.why, access: "manual" });
+      out.push({ name: v.name, where: v.where, why: v.why, access: "manual", url: v.url });
     }
     return out;
   })();
@@ -516,6 +520,9 @@ function SearchTab({ profile, expansions, llmConfigured, connections, channels, 
         <p className="mt-1 text-sm text-[var(--dim)]">Pick the channels, press the button. Search runs on demand across the <strong className="text-[var(--text)]">open channels</strong> — public, searchable, no API needed — then Muse synthesizes every candidate with a verdict, evidence quote and confidence. The matches land on the <strong className="text-[var(--text)]">Results tab</strong>, which opens by itself.</p>
         <fieldset className="mt-3">
           <legend className={labelCls}>Open channels — picked for this profile, toggle freely</legend>
+          {!recsReady && shownOpts.length === 0 && (
+            <p role="status" className="text-sm text-[var(--dim)]">Finding this profile's channels across the web — nothing generic is assumed meanwhile.</p>
+          )}
           <div className="flex flex-wrap gap-2">
             {shownOpts.map((o) => (
               <label key={o.channel} title={recReasons[o.channel] ?? o.label} className={`flex cursor-pointer items-center gap-2 rounded-full border px-3 py-1.5 text-sm ${channels.includes(o.channel) ? "border-[var(--accent)] bg-[var(--accent-bg)] font-semibold" : "border-[var(--border)]"}`}>
@@ -535,6 +542,7 @@ function SearchTab({ profile, expansions, llmConfigured, connections, channels, 
                 <li key={i} className="rounded-[var(--radius)] bg-[var(--surface)] px-2.5 py-1.5">
                   <span className="font-medium">{c.name}</span>{c.where && <span className="text-[var(--dim)]"> · {c.where}</span>}
                   <span className="ml-2 rounded-full bg-[var(--amber-bg)] px-2 py-0.5 text-[11px] font-semibold text-[var(--amber)]">{c.access === "closed" ? "Closed — you join & send" : "Not searched — add by hand"}</span>
+                  {c.url && <a className="ml-2 text-xs font-semibold text-[var(--accent)] underline" href={c.url} target="_blank" rel="noreferrer">Join →</a>}
                   {c.why && <span className="mt-0.5 block text-[var(--dim)]">{c.why}</span>}
                 </li>
               ))}

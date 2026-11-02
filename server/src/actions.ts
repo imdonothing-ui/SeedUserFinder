@@ -715,7 +715,7 @@ async function verifyForumDomain(domain: string): Promise<DynamicVenue | null> {
 export type DiscoveryFindings = {
   evidence: { channel: string; threads: number; samples: string[] }[];
   dynamic: DynamicVenue[];
-  venues: { name: string; where: string; why: string }[];
+  venues: { name: string; where: string; why: string; url: string }[];
 };
 const discoveryCache = new Map<number, { at: number; data: DiscoveryFindings }>();
 export function clearDiscoveryCache(profileId: number) { discoveryCache.delete(profileId); }
@@ -748,7 +748,7 @@ export async function discoverVenuesFor(profile: ProfileLike & { id: number }): 
     const reg = REGISTRY_DOMAINS[g.domain];
     if (reg) { data.evidence.push({ channel: reg, threads: g.urls.length, samples: g.titles.slice(0, 2) }); continue; }
     if (g.sub) {
-      data.venues.push({ name: `r/${g.sub}`, where: "Reddit", why: `Web search found ${g.urls.length} thread${g.urls.length === 1 ? "" : "s"} about '${anchor}' here — e.g. “${g.titles[0]}”. No public API: join and add by hand (or connect the Reddit POC).` });
+      data.venues.push({ name: `r/${g.sub}`, where: "Reddit", why: `Web search found ${g.urls.length} thread${g.urls.length === 1 ? "" : "s"} about '${anchor}' here — e.g. “${g.titles[0]}”. No public API: join and add by hand (or connect the Reddit POC).`, url: `https://www.reddit.com/r/${g.sub}/` });
       continue;
     }
     if (g.domain.endsWith(".stackexchange.com") || g.domain === "stackoverflow.com") {
@@ -764,7 +764,7 @@ export async function discoverVenuesFor(profile: ProfileLike & { id: number }): 
   for (const v of verified) if (v) { data.dynamic.push(v); verifiedDomains.add(v.domain); }
   for (const g of verifyTargets) {
     if (verifiedDomains.has(g.domain) || data.venues.length >= 6) continue;
-    data.venues.push({ name: labelFor(g.domain), where: g.domain, why: `Web search found ${g.urls.length} discussion thread${g.urls.length === 1 ? "" : "s"} about '${anchor}' here — e.g. “${g.titles[0]}”. No thread sitemap: join and add by hand.` });
+    data.venues.push({ name: labelFor(g.domain), where: g.domain, why: `Web search found ${g.urls.length} discussion thread${g.urls.length === 1 ? "" : "s"} about '${anchor}' here — e.g. “${g.titles[0]}”. No thread sitemap: join and add by hand.`, url: `https://${g.domain}/` });
   }
   discoveryCache.set(profile.id, { at: Date.now(), data });
   return data;
@@ -795,7 +795,7 @@ export function sortRecs<T extends { fit: ChannelFit; needsConnection: boolean; 
 // plan votes with the communities it maps, and per-profile mappings decide
 // whether Stack Exchange or a sitemap forum earns a place at all.
 const OPEN_SEARCH_CHANNELS = ["bluesky", "hackernews", "github", "stackexchange", "agingcare", "mumsnet", "makeuptalk", "lipstickalley", "devto", "lobsters"];
-const DEV_SIGNALS = ["software", "developer", "developers", "programmer", "coding", "github", "api", "saas", "devtools", "open source", "pull request", "codebase", "deploy", "localhost", "npm", "startup", "indie hacker", "hacker news", "tech stack", "side project", "web app", "mobile app", "launch"];
+const DEV_SIGNALS = ["software", "developer", "developers", "programmer", "coding", "github", "api", "saas", "devtools", "open source", "pull request", "codebase", "deploy", "localhost", "npm", "startup", "indie hacker", "hacker news", "tech stack", "side project", "web app", "mobile app", "launch", "stack overflow", "debugging", "debug", "bootcamp"];
 const CAREER_SIGNALS = ["laid off", "layoff", "layoffs", "unemployed", "job search", "freelance", "freelancer", "side hustle", "passive income", "income", "career", "interview", "resume", "fired", "severance", "paycheck"];
 const ISSUE_SIGNALS = ["bug", "bugs", "error", "errors", "broken", "issue", "issues", "crash", "exception"];
 // Everyday-life topics whose biggest public conversations live on Reddit and
@@ -1977,7 +1977,7 @@ export const Actions = {
   // non-technical profile.
   recommendChannels: defineAction({
     request: z.object({ profileId: z.number() }),
-    response: z.object({ status: z.string(), message: z.string(), basedOn: z.string(), recs: z.array(z.object({ channel: z.string(), label: z.string(), fit: z.string(), reasons: z.array(z.string()), needsConnection: z.boolean() })), venues: z.array(z.object({ name: z.string(), where: z.string(), why: z.string() })) }),
+    response: z.object({ status: z.string(), message: z.string(), basedOn: z.string(), recs: z.array(z.object({ channel: z.string(), label: z.string(), fit: z.string(), reasons: z.array(z.string()), needsConnection: z.boolean() })), venues: z.array(z.object({ name: z.string(), where: z.string(), why: z.string(), url: z.string() })) }),
     async handler(ctx, args) {
       const db = ctx.db<typeof schema>();
       const profRows = await db.select().from(schema.profiles).where(eq(schema.profiles.id, args.profileId));
@@ -2001,7 +2001,7 @@ export const Actions = {
       // discussion threads found by search merge into the static recs, and
       // verified new forums join the lineup as `forum:<slug>` channels. A
       // failed discovery degrades to static recs — never an error.
-      let venues: { name: string; where: string; why: string }[] = [];
+      let venues: { name: string; where: string; why: string; url: string }[] = [];
       try {
         const found = await discoverVenuesFor(profile);
         mergeDiscovery(recs, found);

@@ -177,6 +177,8 @@ const PASTSMART = { productName: "Past Smart", productDesc: "sells pet food", au
 check(JSON.stringify(stackSitesFor(PASTSMART)) === JSON.stringify(["pets"]), "pet profile maps the Pets Stack Exchange", stackSitesFor(PASTSMART));
 check(!!channelRecsFor(PASTSMART, null).recs.find((r) => r.channel === "stackexchange" && r.fit !== "poor"), "pet profile: Stack Exchange viable, not just Bluesky", null);
 check(lobstersFor(DEV) === true && lobstersFor(MAKEUP) === false && lobstersFor(SECONDHIFT) === false, "lobsters: dev only");
+const BOOT = { productName: "BootDebug", productDesc: "rubber-duck debugging help", audience: "bootcamp grads shipping first side projects", pain: "stuck debugging errors for hours", workaround: "posting on stack overflow", keywords: "", coreAction: "" };
+check(!!channelRecsFor(BOOT, null).recs.find((r) => r.channel === "hackernews" && r.fit !== "poor") && !!channelRecsFor(BOOT, null).recs.find((r) => r.channel === "lobsters" && r.fit !== "poor"), "dev markers (stack overflow, debugging, bootcamp) count as dev", null);
 const dRecs2 = channelRecsFor(DEV, null).recs;
 check(!!dRecs2.find((r) => r.channel === "devto" && r.fit !== "poor") && !!dRecs2.find((r) => r.channel === "lobsters" && r.fit !== "poor"), "dev: devto + lobsters viable", null);
 // A plan community votes its channel up: Stack Exchange is poor for makeup

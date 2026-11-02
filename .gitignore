@@ -30,3 +30,4 @@ audits/
 icon.png
 icon.jpg
 icon.webp
+*.tsbuildinfo
