@@ -47,6 +47,15 @@ const SPECS: Spec[] = [
     ],
   },
   {
+    name: "studentdoctor", verdict: "feasible", why: "XenForo sitemap index, newest thread files pinned, searched live",
+    probes: [
+      { url: "https://forums.studentdoctor.net/sitemap.php", expect: "sitemap", note: "index must list thread files" },
+      { url: "https://forums.studentdoctor.net/sitemap-24.xml", expect: "sniff", sniff: /\/threads\//, note: "newest file must hold thread URLs" },
+    ],
+    profile: { productName: "help doctor take notes during patient visit", productDesc: "AI scribe that writes the visit note", audience: "doctors drowning in documentation", pain: "notes eat two hours after clinic", workaround: "typing during the visit", keywords: "", coreAction: "" },
+    searchChannels: ["studentdoctor"], expectOpenSubset: ["studentdoctor", "bluesky"], expectCreatedMin: 1,
+  },
+  {
     name: "brickset", verdict: "infeasible", why: "forum closed (page points at Discord/Facebook); main-site sitemap 404s; forum subdomain dead",
     probes: [
       { url: "https://brickset.com/sitemap.xml", expect: "unusable", note: "serves error page, not a sitemap" },

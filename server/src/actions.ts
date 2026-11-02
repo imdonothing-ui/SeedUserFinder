@@ -126,6 +126,11 @@ const DOMAIN_CLUSTERS: DomainCluster[] = [
     triggers: ["lego", "legos", "afol", "duplo", "bricklink"],
     terms: ["lego", "legos", "afol", "duplo", "technic", "minifig", "minifigure", "bricklink", "lego set", "retired set"],
   },
+  {
+    id: "medical", label: "medical",
+    triggers: ["doctor", "doctors", "physician", "physicians", "nurse", "nurses", "medical student", "medical school", "scribe", "clinic", "clinical"],
+    terms: ["doctor", "doctors", "physician", "physicians", "nurse", "nurses", "scribe", "patient", "patients", "clinic", "clinical", "residency"],
+  },
 ];
 
 // LIGHT SAFETY NET (changed after the FirstFeedback live test, 2026-10-28):
@@ -692,7 +697,7 @@ export function ddgResults(html: string): DdgHit[] {
 const REGISTRY_DOMAINS: Record<string, string> = {
   "agingcare.com": "agingcare", "mumsnet.com": "mumsnet",
   "makeuptalk.com": "makeuptalk", "lipstickalley.com": "lipstickalley",
-  "eurobricks.com": "eurobricks",
+  "eurobricks.com": "eurobricks", "forums.studentdoctor.net": "studentdoctor",
   "dev.to": "devto", "lobste.rs": "lobsters",
   "news.ycombinator.com": "hackernews", "github.com": "github", "bsky.app": "bluesky",
 };
@@ -823,7 +828,7 @@ export async function discoverVenuesFor(profile: ProfileLike & { id: number }): 
 // Merge web evidence into static recs (pure, tested): forums with real
 // thread evidence are rescued from poor; article-type channels keep their
 // signal verdict (a Show HN showcase hit proves nothing about seekers).
-const FORUM_CHANNELS = new Set(["agingcare", "mumsnet", "makeuptalk", "lipstickalley", "eurobricks"]);
+const FORUM_CHANNELS = new Set(["agingcare", "mumsnet", "makeuptalk", "lipstickalley", "eurobricks", "studentdoctor"]);
 export function mergeDiscovery<T extends { channel: string; fit: ChannelFit; reasons: string[] }>(recs: T[], findings: DiscoveryFindings): T[] {
   for (const e of findings.evidence) {
     const r = recs.find((x) => x.channel === e.channel);
@@ -844,7 +849,7 @@ export function sortRecs<T extends { fit: ChannelFit; needsConnection: boolean; 
 // the founder's own profile text vote channels up or down, Muse's expansion
 // plan votes with the communities it maps, and per-profile mappings decide
 // whether Stack Exchange or a sitemap forum earns a place at all.
-const OPEN_SEARCH_CHANNELS = ["bluesky", "hackernews", "github", "stackexchange", "agingcare", "mumsnet", "makeuptalk", "lipstickalley", "eurobricks", "devto", "lobsters"];
+const OPEN_SEARCH_CHANNELS = ["bluesky", "hackernews", "github", "stackexchange", "agingcare", "mumsnet", "makeuptalk", "lipstickalley", "eurobricks", "studentdoctor", "devto", "lobsters"];
 const DEV_SIGNALS = ["software", "developer", "developers", "programmer", "coding", "github", "api", "saas", "devtools", "open source", "pull request", "codebase", "deploy", "localhost", "npm", "startup", "indie hacker", "hacker news", "tech stack", "side project", "web app", "mobile app", "launch", "stack overflow", "debugging", "debug", "bootcamp"];
 const CAREER_SIGNALS = ["laid off", "layoff", "layoffs", "unemployed", "job search", "freelance", "freelancer", "side hustle", "passive income", "income", "career", "interview", "resume", "fired", "severance", "paycheck"];
 const ISSUE_SIGNALS = ["bug", "bugs", "error", "errors", "broken", "issue", "issues", "crash", "exception"];
@@ -874,7 +879,7 @@ export type ChannelRec = { channel: string; label: string; fit: ChannelFit; reas
 const CHANNEL_LABELS: Record<string, string> = {
   bluesky: "Bluesky", hackernews: "Hacker News", github: "GitHub", stackexchange: "Stack Exchange",
   agingcare: "AgingCare", mumsnet: "Mumsnet", makeuptalk: "MakeupTalk", lipstickalley: "Lipstick Alley",
-  eurobricks: "Eurobricks",
+  eurobricks: "Eurobricks", studentdoctor: "Student Doctor Network",
   devto: "Dev.to", lobsters: "Lobsters", reddit_poc: "Reddit · POC",
 };
 
@@ -1087,13 +1092,19 @@ const BEAUTY_KIN = ["beauty", "beautician", "sephora", "ulta", "drugstore", "tut
 // so those stay join-by-hand venues, never a channel.
 const LEGO_CORE = ["lego", "legos", "afol", "duplo", "bricklink", "minifigure", "minifig"];
 const LEGO_KIN = ["collector", "collectors", "collecting", "collection", "rare set", "retired set", "limited edition", "technic", "sealed set", "minifigures"];
+// Doctors: Student Doctor Network (XenForo, verified 2026-11-02 — newest
+// thread files are sitemap-24 then sitemap-23; higher files hold member
+// profiles, which self-filter by title length). Sermo and Doximity are
+// login-walled; KevinMD is article comments, not threads — venues only.
+const MED_CORE = ["doctor", "doctors", "physician", "physicians", "nurse", "nurses", "medical student", "medical school", "scribe", "residency", "prescription"];
+const MED_KIN = ["patient", "patients", "clinic", "clinical", "dosage", "diagnosis", "symptom"];
 // A section is one slice of a forum's sitemap worth fetching for a matching
 // profile: `token` must appear in the sitemap file's URL (slash-delimited so
 // "/talk/parenting/" never matches "eco-friendly-parenting"), `signals`
 // narrows it to the profile (null = the whole forum already mapped, as with
 // AgingCare's Q&A/Discussions split).
 export type SitemapSection = { token: string; signals: string[] | null };
-export type SitemapForum = { channel: string; label: string; index: string; sections: SitemapSection[]; core: string[]; kin: string[]; minScore: number; maxFiles: number; communityFor: (url: string) => string };
+export type SitemapForum = { channel: string; label: string; index: string; sections: SitemapSection[]; core: string[]; kin: string[]; minScore: number; maxFiles: number; communityFor: (url: string) => string; needsCore?: boolean };
 function mumsnetCommunity(url: string): string {
   const m = url.match(/\/talk\/([^/]+)\//);
   const topic = (m?.[1] ?? "").replace(/[_-]+/g, " ").trim();
@@ -1159,6 +1170,17 @@ const SITEMAP_FORUMS: SitemapForum[] = [
     communityFor: () => "Eurobricks",
     core: LEGO_CORE, kin: LEGO_KIN, minScore: 2, maxFiles: 4,
   },
+  {
+    channel: "studentdoctor", label: "Student Doctor Network",
+    index: "https://forums.studentdoctor.net/sitemap.php",
+    // XenForo oldest-first: sitemap-24/sitemap-23 are the newest thread
+    // files (higher files hold member profiles, which self-filter by title
+    // length). File numbers roll as the forum grows — re-verify yearly.
+    sections: [{ token: "sitemap-24", signals: null }, { token: "sitemap-23", signals: null }],
+    communityFor: () => "Student Doctor Network",
+    core: MED_CORE, kin: MED_KIN, minScore: 2, maxFiles: 2,
+    needsCore: true,
+  },
 ];
 export function sitemapForumsFor(profile: ProfileLike): SitemapForum[] {
   const hay = normText([profile.productName, profile.productDesc, profile.audience, profile.pain, profile.workaround, profile.keywords, profile.coreAction].join(" "));
@@ -1170,6 +1192,9 @@ export function sitemapForumsFor(profile: ProfileLike): SitemapForum[] {
   return SITEMAP_FORUMS.filter((f) => {
     const coreHits = countSignals(hay, f.core);
     if (clustered && coreHits === 0) return false;
+    // needsCore forums (doctors, not doctors-adjacent): kin words like
+    // "patient" also appear in family caregiving, so kin alone never maps.
+    if (f.needsCore && coreHits === 0) return false;
     return coreHits * 2 + countSignals(hay, f.kin) >= f.minScore;
   });
 }
@@ -1366,7 +1391,7 @@ async function generateExpansionRound(
   const painPhrasesSaved: string[] = (() => { try { const v = JSON.parse(profile.painPhrases || "[]") as unknown; return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : []; } catch { return []; } })();
   const isLaterRound = round > 1;
   const r = await runLlm(ctx, "small",
-    `You are planning WHERE to find seed users for a founder — not just rewording one keyword. Build a search expansion plan from this target profile.\n\nProfile — Product: ${profile.productName} — ${profile.productDesc}\nAudience: ${profile.audience}\nPain (founder's words): ${profile.pain}\nWorkaround today: ${profile.workaround}\nFounder keywords: ${profile.keywords}\nCore action: ${profile.coreAction}\nPain phrases already known: ${painPhrasesSaved.join(" · ") || "(none yet)"}\n\nDOMAIN ANCHOR (hard rule): the anchor term is "${anchorTerm}". Valid anchor terms for queries: ${terms.join(", ")}. EVERY query you return MUST contain at least one of those anchor terms, word-for-word. A query made only of generic words (like "skill", "struggle", "help", "sucks", "beginner") is forbidden — unanchored queries are discarded server-side. If you broaden, broaden the pain/audience/community around the anchor, never drop the anchor.\n\nReturn:\n- anchorTerm: exactly "${anchorTerm}".\n- queries: ${isLaterRound ? "6-8" : "5-7"} search queries a real person in pain might match — variants and synonyms in the person's own language, each with a one-line intent. Cover different phrasings of the pain, the workaround, and beginner/first-time framings — all anchored.\n- painPhrases: 5-8 related pain phrases and adjacent problem phrasings in their words (these inform the founder; they are not all queries).\n- adjacentProblems: 3-5 adjacent problems the same person hits around this pain.\n- adjacentAudiences: 3-5 adjacent audiences — people one step wider than the profile who plausibly hit the same anchored pain.\n- communities: 5-8 specific places these people already talk — name the actual kind of place (e.g. for a beauty profile: beginner makeup subreddits, beauty forums, tutorial comment sections, beginner beauty groups/hashtags; for a caregiver profile: AgingCare Q&A and Discussions threads, Mumsnet elderly_parents threads). For each: name, where (platform/place), channel — one of bluesky, hackernews, github, stackexchange, agingcare, mumsnet, makeuptalk, lipstickalley, eurobricks, devto, lobsters, reddit_poc, reddit, x, facebook, discord, slack, linkedin, instagram, youtube (use stackexchange only for Q&A-style communities, agingcare for caregiver/elder-care forum threads, mumsnet for parenting/family forum threads, makeuptalk or lipstickalley for beauty/makeup/cosmetics forum threads, eurobricks for Lego/AFOL collector forum threads, devto for developer or career articles by tag, lobsters for developer front-page discussion) — access: "open" if it is a public searchable channel EarlyProof searches by default, "closed" if the founder must provide an API/connection or join and send themselves, and why this place fits.\n- relaxations: 2-4 specific over-strict terms or exact phrases from the profile/keywords that could be relaxed WITHOUT dropping the anchor (name the exact term and what to relax it to).\n- nextSuggestions: 3-5 concrete next expansion moves if this round still returns 0 synthesized results — broaden to an adjacent audience or adjacent pain (still anchored), try a different named channel or community, relax a named over-strict term.\n${isLaterRound ? `\nThis is expansion round ${round}. The previous search context: ${context.reason} It found ${context.found} candidates, the pre-filter dropped ${context.discarded}, Muse synthesized ${context.synthesized} results, and ${context.seenCount} leads are already seen (new results are deduplicated against them — do not repeat old queries). Previous rounds already tried these queries: ${previousQueries.join(" · ") || "(none)"}. Your new queries must be DIFFERENT from those: lean on the adjacent audiences, adjacent pains, new communities and the relaxations — while keeping every query anchored to "${anchorTerm}".` : `\nThis is expansion round 1, generated before the search runs.`}`,
+    `You are planning WHERE to find seed users for a founder — not just rewording one keyword. Build a search expansion plan from this target profile.\n\nProfile — Product: ${profile.productName} — ${profile.productDesc}\nAudience: ${profile.audience}\nPain (founder's words): ${profile.pain}\nWorkaround today: ${profile.workaround}\nFounder keywords: ${profile.keywords}\nCore action: ${profile.coreAction}\nPain phrases already known: ${painPhrasesSaved.join(" · ") || "(none yet)"}\n\nDOMAIN ANCHOR (hard rule): the anchor term is "${anchorTerm}". Valid anchor terms for queries: ${terms.join(", ")}. EVERY query you return MUST contain at least one of those anchor terms, word-for-word. A query made only of generic words (like "skill", "struggle", "help", "sucks", "beginner") is forbidden — unanchored queries are discarded server-side. If you broaden, broaden the pain/audience/community around the anchor, never drop the anchor.\n\nReturn:\n- anchorTerm: exactly "${anchorTerm}".\n- queries: ${isLaterRound ? "6-8" : "5-7"} search queries a real person in pain might match — variants and synonyms in the person's own language, each with a one-line intent. Cover different phrasings of the pain, the workaround, and beginner/first-time framings — all anchored.\n- painPhrases: 5-8 related pain phrases and adjacent problem phrasings in their words (these inform the founder; they are not all queries).\n- adjacentProblems: 3-5 adjacent problems the same person hits around this pain.\n- adjacentAudiences: 3-5 adjacent audiences — people one step wider than the profile who plausibly hit the same anchored pain.\n- communities: 5-8 specific places these people already talk — name the actual kind of place (e.g. for a beauty profile: beginner makeup subreddits, beauty forums, tutorial comment sections, beginner beauty groups/hashtags; for a caregiver profile: AgingCare Q&A and Discussions threads, Mumsnet elderly_parents threads). For each: name, where (platform/place), channel — one of bluesky, hackernews, github, stackexchange, agingcare, mumsnet, makeuptalk, lipstickalley, eurobricks, studentdoctor, devto, lobsters, reddit_poc, reddit, x, facebook, discord, slack, linkedin, instagram, youtube (use stackexchange only for Q&A-style communities, agingcare for caregiver/elder-care forum threads, mumsnet for parenting/family forum threads, makeuptalk or lipstickalley for beauty/makeup/cosmetics forum threads, eurobricks for Lego/AFOL collector forum threads, studentdoctor for doctor/physician/resident forum threads, devto for developer or career articles by tag, lobsters for developer front-page discussion) — access: "open" if it is a public searchable channel EarlyProof searches by default, "closed" if the founder must provide an API/connection or join and send themselves, and why this place fits.\n- relaxations: 2-4 specific over-strict terms or exact phrases from the profile/keywords that could be relaxed WITHOUT dropping the anchor (name the exact term and what to relax it to).\n- nextSuggestions: 3-5 concrete next expansion moves if this round still returns 0 synthesized results — broaden to an adjacent audience or adjacent pain (still anchored), try a different named channel or community, relax a named over-strict term.\n${isLaterRound ? `\nThis is expansion round ${round}. The previous search context: ${context.reason} It found ${context.found} candidates, the pre-filter dropped ${context.discarded}, Muse synthesized ${context.synthesized} results, and ${context.seenCount} leads are already seen (new results are deduplicated against them — do not repeat old queries). Previous rounds already tried these queries: ${previousQueries.join(" · ") || "(none)"}. Your new queries must be DIFFERENT from those: lean on the adjacent audiences, adjacent pains, new communities and the relaxations — while keeping every query anchored to "${anchorTerm}".` : `\nThis is expansion round 1, generated before the search runs.`}`,
     expansionPlanSchema);
   if (!r.ok) return r;
   const o = r.value;
@@ -1384,7 +1409,7 @@ async function generateExpansionRound(
     adjacentAudiences: cleanStrs(o.adjacentAudiences, 5),
     communities: o.communities.slice(0, 8).map((c) => ({
       name: c.name.trim().slice(0, 120), where: c.where.trim().slice(0, 120),
-      channel: ["bluesky", "hackernews", "github", "stackexchange", "agingcare", "mumsnet", "makeuptalk", "lipstickalley", "eurobricks", "devto", "lobsters", "reddit_poc", "reddit", "x", "facebook", "discord", "slack", "linkedin", "instagram", "youtube", "manual"].includes(c.channel.trim()) ? c.channel.trim() : "manual",
+      channel: ["bluesky", "hackernews", "github", "stackexchange", "agingcare", "mumsnet", "makeuptalk", "lipstickalley", "eurobricks", "studentdoctor", "devto", "lobsters", "reddit_poc", "reddit", "x", "facebook", "discord", "slack", "linkedin", "instagram", "youtube", "manual"].includes(c.channel.trim()) ? c.channel.trim() : "manual",
       access: c.access.trim().toLowerCase() === "closed" ? "closed" : "open",
       why: c.why.trim().slice(0, 240),
     })).filter((c) => c.name),

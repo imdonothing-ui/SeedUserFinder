@@ -30,7 +30,7 @@ const CHANNEL_LABEL: Record<string, string> = {
   reddit: "Reddit · pasted", x: "X · pasted", facebook: "Facebook Group", discord: "Discord",
   slack: "Slack", linkedin: "LinkedIn DM", instagram: "Instagram DM", manual: "Manual",
 };
-const NEW_CHANNELS = new Set(["stackexchange", "agingcare", "mumsnet", "makeuptalk", "lipstickalley", "eurobricks", "devto", "lobsters"]);
+const NEW_CHANNELS = new Set(["stackexchange", "agingcare", "mumsnet", "makeuptalk", "lipstickalley", "eurobricks", "studentdoctor", "devto", "lobsters"]);
 const STAGES = ["new", "drafted", "approved", "sent", "replied", "conversation", "trial"] as const;
 const STAGE_LABEL: Record<string, string> = { new: "Found", drafted: "Drafted", approved: "Approved", sent: "Sent", replied: "Replied", conversation: "Conversation", trial: "In trial", dismissed: "Dismissed" };
 const EVENT_TYPES = ["started", "core", "returned", "paid", "referred"] as const;
@@ -155,7 +155,11 @@ export function App() {
     setRecsAppliedKey(""); channelsTouched.current = false;
     setChannels([]); setSubs(""); setRunId(0); setLastSearch(null); setSearchResult("");
   }, [activeProfile?.id]);
-  const recQ = useQuery({ queryKey: ["recs", activeProfile?.id ?? 0], queryFn: () => api.recommendChannels({ profileId: activeProfile?.id ?? 0 }), enabled: !!activeProfile });
+  // Recs are keyed by plan round, not just profile: any path that creates,
+  // regenerates, or retires the plan changes this key, so the lineup always
+  // reconverges on the newest plan instead of showing a stale message.
+  const planRound = (data?.expansions ?? []).filter((x) => x.profileId === activeProfile?.id).sort((a, b) => b.round - a.round)[0]?.round ?? 0;
+  const recQ = useQuery({ queryKey: ["recs", activeProfile?.id ?? 0, planRound], queryFn: () => api.recommendChannels({ profileId: activeProfile?.id ?? 0 }), enabled: !!activeProfile });
   useEffect(() => {
     if (!recQ.data || recQ.data.status !== "ok") return;
     const key = `${activeProfile?.id ?? 0}:${recQ.data.basedOn ?? ""}`;
@@ -444,7 +448,7 @@ function ProfileTab({ profiles, activeProfile, onSelect, onDone, llm, flash, inv
 const CH_DESCRIPTOR: Record<string, string> = {
   bluesky: "public search", hackernews: "public search", github: "public search",
   stackexchange: "public Q&A", agingcare: "forum threads", mumsnet: "forum threads",
-  makeuptalk: "forum threads", lipstickalley: "forum threads", eurobricks: "forum threads", devto: "articles", lobsters: "dev discussion",
+  makeuptalk: "forum threads", lipstickalley: "forum threads", eurobricks: "forum threads", studentdoctor: "forum threads", devto: "articles", lobsters: "dev discussion",
 };
 function descriptorFor(ch: string): string {
   return CH_DESCRIPTOR[ch] ?? (ch.startsWith("forum:") ? "forum threads" : "public search");
@@ -464,7 +468,7 @@ function SearchTab({ profile, expansions, llmConfigured, connections, channels, 
   const isFirstFeedback = profile.productName.trim().toLowerCase() === "firstfeedback";
   // Irrelevant channels are hidden, not displayed — one quiet line reveals
   // them for override. Channels searchable right now:
-  const EXECUTABLE = new Set(["bluesky", "hackernews", "github", "stackexchange", "agingcare", "mumsnet", "makeuptalk", "lipstickalley", "eurobricks", "devto", "lobsters"]);
+  const EXECUTABLE = new Set(["bluesky", "hackernews", "github", "stackexchange", "agingcare", "mumsnet", "makeuptalk", "lipstickalley", "eurobricks", "studentdoctor", "devto", "lobsters"]);
 
   // Search-run progress: the server records real phases per run; the latest
   // run's plain-words summary is shown once it lands.

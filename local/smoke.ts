@@ -214,6 +214,16 @@ check(!!channelRecsFor(LEGO, null).recs.find((r) => r.channel === "eurobricks" &
 const LEGO_KIN = { ...LEGO, audience: "parents buying for kids", pain: "can't find rare sets for my kids" };
 check(channelRecsFor(LEGO_KIN, null).recs.find((r) => r.channel === "mumsnet")?.fit === "poor", "lego cluster vetoes kin-only parenting-forum mapping", null);
 check(!sitemapForumsFor(MAKEUP).some((f) => f.channel === "eurobricks") && !sitemapForumsFor(DEV).some((f) => f.channel === "eurobricks"), "eurobricks stays dark for non-lego profiles", null);
+// Student Doctor Network (verified 2026-11-02: XenForo, sitemap-24/sitemap-23
+// are the newest thread files; members live in higher files) is the doctor
+// waterhole. Sermo/Doximity are login-walled; KevinMD is comments, not
+// threads — all three stay venues, never channels.
+const DOC = { productName: "help doctor take notes during patient visit", productDesc: "help doctor take notes during patient visit", audience: "help doctor take notes during patient visit", pain: "help doctor take notes during patient visit", workaround: "", keywords: "", coreAction: "" };
+check(sitemapForumsFor(DOC).map((f) => f.channel).join(",") === "studentdoctor", "doctor fixture maps Student Doctor Network only", sitemapForumsFor(DOC).map((f) => f.channel));
+check(!!channelRecsFor(DOC, null).recs.find((r) => r.channel === "studentdoctor" && r.fit === "best"), "doctor: SDN best alongside Bluesky", null);
+const DOC_KIN = { ...DOC, pain: "notes eat hours after clinic, kids screaming, no sleep" };
+check(channelRecsFor(DOC_KIN, null).recs.find((r) => r.channel === "mumsnet")?.fit === "poor", "medical cluster vetoes kin-only parenting-forum mapping", null);
+check(!sitemapForumsFor(MAKEUP).some((f) => f.channel === "studentdoctor") && !sitemapForumsFor(DEV).some((f) => f.channel === "studentdoctor") && !sitemapForumsFor(WILLOW).some((f) => f.channel === "studentdoctor"), "studentdoctor stays dark for non-doctor profiles", null);
 // A profile's hunt belongs to its exact words: new/edited text gets a fresh
 // hunt, untouched text keeps its plan — never another profile's channels.
 const SIG_A = { productName: "Second hand market place", productDesc: "sell second hand stuff", audience: "buyers", pain: "no buyers", workaround: "", keywords: "", coreAction: "" };
