@@ -184,6 +184,25 @@ export function App() {
   // refreshes them too — otherwise the picks never sharpen after planning.
   const invalidate = () => { qc.invalidateQueries({ queryKey: ["state"] }); qc.invalidateQueries({ queryKey: ["recs"] }); };
   const flash = (m: string) => { setNotice(m); window.scrollTo({ top: 0, behavior: "smooth" }); };
+  // The expansion plan runs itself the moment a profile is provided — not on
+  // first Search visit. Single owner (SearchTab no longer auto-fires): when
+  // the active profile has no plan yet and Muse is configured, generate
+  // round 1 once per profile text. Editing text retires the plan
+  // server-side, which re-arms this automatically; configuring the key later
+  // fires it too, so a profile is never stuck plan-less.
+  const autoPlan = useMutation({
+    mutationFn: (pid: number) => api.generateExpansionPlan({ profileId: pid }),
+    onSuccess: (r) => { invalidate(); if (r.status === "ok") flash("Expansion plan saved — it will drive the next search."); },
+    onError: () => flash("Expansion plan failed — open Search and tap Re-expand to retry."),
+  });
+  const autoPlannedKey = useRef("");
+  const activePlanTextKey = activeProfile ? `${activeProfile.id}:${[activeProfile.productName, activeProfile.productDesc, activeProfile.audience, activeProfile.pain, activeProfile.workaround, activeProfile.keywords, activeProfile.coreAction].join("|")}` : "";
+  const activeExpansionsCount = (data?.expansions ?? []).filter((x) => x.profileId === activeProfile?.id).length;
+  useEffect(() => {
+    if (!llm?.configured || !activeProfile || activeExpansionsCount > 0 || autoPlannedKey.current === activePlanTextKey || autoPlan.isPending) return;
+    autoPlannedKey.current = activePlanTextKey;
+    autoPlan.mutate(activeProfile.id);
+  }, [llm?.configured, activeProfile, activeExpansionsCount, activePlanTextKey]);
 
   const hasProfile = profiles.length > 0;
   const resultCount = leads.filter((l) => ["new", "drafted", "approved"].includes(l.status) && l.llmCategory).length;
@@ -518,19 +537,9 @@ function SearchTab({ profile, expansions, llmConfigured, connections, channels, 
     onSuccess: (r) => { invalidate(); setResult(r.message); if (r.status === "ok") flash("Expansion plan saved — it will drive the next search."); },
     onError: () => setResult("Expansion plan failed — try again."),
   });
-  // Channel likelihood runs itself: the first time a profile lands on Search
-  // with no expansion plan, Muse figures out where these people talk before
-  // the founder presses anything. Picks sharpen when the plan lands.
-  // Keyed by the profile's exact words, not just its id: editing the text
-  // restarts the hunt by itself (the server drops plans for changed text),
-  // while an unchanged profile never plans twice.
-  const autoPlanned = useRef("");
-  const planTextKey = `${profile.id}:${[profile.productName, profile.productDesc, profile.audience, profile.pain, profile.workaround, profile.keywords, profile.coreAction].join("|")}`;
-  useEffect(() => {
-    if (!llmConfigured || expansions.length > 0 || autoPlanned.current === planTextKey || genPlan.isPending) return;
-    autoPlanned.current = planTextKey;
-    genPlan.mutate();
-  }, [llmConfigured, expansions.length, planTextKey]);
+  // Manual plan buttons only — auto-generation lives in App so the plan
+  // starts when the profile is provided, not on first Search visit.
+  // Picks sharpen when the plan lands.
   const search = useMutation({
     mutationFn: () => api.searchLiveLeads({ profileId: profile.id, channels, subreddits: subs }),
     onSuccess: (r) => {
@@ -567,7 +576,7 @@ function SearchTab({ profile, expansions, llmConfigured, connections, channels, 
           ) : plan && latestExpansion ? (
             <><span className="font-semibold">! Muse plan</span> <span className="text-[var(--dim)]">— round {latestExpansion.round} came back empty — tap Re-expand for sharper picks</span></>
           ) : (
-            <><span className="font-semibold">… Muse plan</span> <span className="text-[var(--dim)]">— {genPlan.isPending ? "Muse is mapping where else they talk…" : "starts by itself as soon as this tab opens"}</span></>
+            <><span className="font-semibold">… Muse plan</span> <span className="text-[var(--dim)]">— {genPlan.isPending ? "Muse is mapping where else they talk…" : "runs automatically for every profile — it should land any second; Re-expand below forces another round"}</span></>
           )}</li>
         </ol>
       </div>
