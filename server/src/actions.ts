@@ -496,8 +496,10 @@ function genCode(): string { return Math.random().toString(36).slice(2, 8).toUpp
 const LLM_SETUP_MESSAGE = "Setup required — Muse LLM is a must-have in EarlyProof, not an optional add-on. Open the AI tab in this app and enter your Muse API key and your Muse model names (small/fast and large) there — in the app only, never in chat. Until Muse is configured, search, classification, drafts, feedback summaries and next-experiment suggestions are blocked. There is no rule-only mode.";
 type LlmSettingsRow = typeof schema.llmSettings.$inferSelect;
 async function loadLlmSettings(ctx: Ctx): Promise<LlmSettingsRow | null> {
+  // Singleton by construction (save replaces the whole table), latest wins
+  // on the read path too — a stale duplicate row can never shadow the key.
   const db = ctx.db<typeof schema>();
-  const rows = await db.select().from(schema.llmSettings);
+  const rows = await db.select().from(schema.llmSettings).orderBy(desc(schema.llmSettings.id)).limit(1);
   const s = rows[0];
   if (!s || !s.apiKey.trim()) return null;
   return s;
@@ -1773,8 +1775,7 @@ export const Actions = {
       const events = await db.select().from(schema.cohortEvents).orderBy(desc(schema.cohortEvents.id));
       const conns = await db.select().from(schema.connections);
       const ph = await db.select().from(schema.posthogConfigs);
-      const llmRows = await db.select().from(schema.llmSettings);
-      const llmRow = llmRows[0];
+      const llmRow = await loadLlmSettings(ctx);
       const feedback = await db.select().from(schema.feedbackEntries).orderBy(desc(schema.feedbackEntries.id));
       const summaries = await db.select().from(schema.llmSummaries).orderBy(desc(schema.llmSummaries.id));
       const expansions = await db.select().from(schema.searchExpansions).orderBy(desc(schema.searchExpansions.id));
@@ -2602,15 +2603,23 @@ export const Actions = {
   // is nothing to pick and nothing to misconfigure.
   saveLlmSettings: defineAction({
     request: z.object({ apiKey: z.string().default(""), founderVoice: z.string().default("") }),
-    response: z.object({ ok: z.boolean() }),
+    response: z.object({ ok: z.boolean(), keyStored: z.boolean(), message: z.string() }),
     async handler(ctx, args) {
       const db = ctx.db<typeof schema>();
-      const existing = await db.select().from(schema.llmSettings);
-      const vals = { provider: "muse", apiKey: args.apiKey.trim() || (existing[0]?.apiKey ?? ""), baseUrl: "", smallModel: "auto", largeModel: "auto", founderVoice: args.founderVoice, updatedAt: Date.now() };
-      if (existing[0]) await db.update(schema.llmSettings).set(vals).where(eq(schema.llmSettings.id, existing[0].id));
-      else await db.insert(schema.llmSettings).values(vals);
+      const typed = args.apiKey.trim();
+      const existing = await loadLlmSettings(ctx);
+      // An empty field with no stored key stores nothing — succeeding here
+      // used to flash "saved" while the stub stayed in charge.
+      if (!typed && !existing) return { ok: false, keyStored: false, message: "No key entered — paste your Muse API key first, then save." };
+      const key = typed || existing!.apiKey;
+      // One row, always: replace the whole table so a duplicate can never
+      // shadow the key on a first-row read.
+      await db.delete(schema.llmSettings);
+      await db.insert(schema.llmSettings).values({ provider: "muse", apiKey: key, baseUrl: "", smallModel: "auto", largeModel: "auto", founderVoice: args.founderVoice, updatedAt: Date.now() });
       ctx.invalidateQueries();
-      return { ok: true };
+      return typed
+        ? { ok: true, keyStored: true, message: `New Muse API key saved (••••${key.slice(-4)}). The status pill flips to Live when the key calls Muse Spark 1.3 directly — hit Test connection to confirm.` }
+        : { ok: true, keyStored: false, message: `Settings saved — kept the saved key (••••${key.slice(-4)}).` };
     },
   }),
 
@@ -2626,20 +2635,32 @@ export const Actions = {
   }),
 
   testLlmConnection: defineAction({
-    request: z.object({}),
+    request: z.object({ apiKey: z.string().default("") }),
     response: z.object({ ok: z.boolean(), status: z.string(), message: z.string() }),
-    async handler(ctx) {
+    async handler(ctx, args) {
       // Receipt-grade: with a Model API key this makes a REAL direct call and
       // names the model that answered, so the founder (and a judge) sees the
       // exact serving path instead of taking it on faith.
+      // A typed-but-unsaved key tests exactly what is in the box — testing
+      // used to run against the STORED key, so typing a key and hitting Test
+      // tested the old stub and failed no matter what was typed.
+      const typed = args.apiKey.trim();
+      // A typed key that isn't an LLM| key can never work on this machine
+      // (no model runtime) — say so at once without consulting the stored
+      // key, which a failing direct call there would only confuse.
+      if (typed && !isDirectKey(typed)) return { ok: false, status: "stub", message: "That key is not an LLM| key and this machine has no model runtime, so it cannot work here — paste an LLM| key for live Muse Spark 1.3." };
       const s = await loadLlmSettings(ctx);
-      if (s && isDirectKey(s.apiKey)) {
+      const candidate = typed || s?.apiKey || "";
+      if (!candidate) return { ok: false, status: "not_configured", message: "No key to test — paste your Muse API key first, then test." };
+      if (isDirectKey(candidate)) {
         const t0 = Date.now();
-        const r = await completeViaMetaModel("Connection test: reply with the single word ok.", s.apiKey, META_MODEL);
+        const r = await completeViaMetaModel("Connection test: reply with the single word ok.", candidate, META_MODEL);
         if (!r.ok) return { ok: false, status: "error", message: `Direct ${META_MODEL} call failed (${r.error}). Check the key and Model API quota.` };
-        // The key is real, so any stub-tagged data still on screen is stale
-        // test output — clear it now so live Muse fills the gaps (phrases
-        // re-expand by themselves, waiting leads re-synthesize on Results).
+        if (typed) return { ok: true, status: "ok", message: `That key reaches ${META_MODEL} directly in ${((Date.now() - t0) / 1000).toFixed(1)}s — hit Save to activate it.` };
+        // The stored key is real, so any stub-tagged data still on screen is
+        // stale test output — clear it now so live Muse fills the gaps
+        // (phrases re-expand by themselves, waiting leads re-synthesize on
+        // Results).
         let cleared = "";
         try {
           const purge = await Actions.purgeStubData.handler(ctx, {});

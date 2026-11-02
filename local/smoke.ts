@@ -83,6 +83,18 @@ await call("saveLlmSettings", { apiKey: "LLM|test|secret", founderVoice: "plain"
 check((await state()).llm.direct === true, "LLM| key reports direct path", null);
 await call("saveLlmSettings", { apiKey: "k-9999", founderVoice: "plain" });
 check((await state()).llm.direct === false, "plain key reports runtime path", null);
+// One settings row ever; empty saves fail honestly; typed keys test as-typed.
+await call("clearLlmSettings", {});
+const emptySave = (await call("saveLlmSettings", { apiKey: "", founderVoice: "" })) as any;
+check(emptySave.ok === false && emptySave.keyStored === false, "empty save with no stored key fails honestly", emptySave);
+await call("saveLlmSettings", { apiKey: "k-9999", founderVoice: "plain" });
+await call("saveLlmSettings", { apiKey: "LLM|test|secret", founderVoice: "plain" });
+const setRows = await db.select().from(schema.llmSettings);
+check(setRows.length === 1 && setRows[0].apiKey === "LLM|test|secret", "settings stay a single row, latest save wins", setRows.map((r) => r.apiKey));
+const typedStub = (await call("testLlmConnection", { apiKey: "local-stub-key" })) as any;
+check(typedStub.ok === false && typedStub.status === "stub", "typed stub key fails honestly without touching the stored key", typedStub);
+check(((await state()).llm as any).keyHint === "••••cret", "stored key untouched by typed test", null);
+await call("saveLlmSettings", { apiKey: "k-9999", founderVoice: "plain" });
 
 // 2b. Direct Muse Spark path: key routing, request shape, response reading,
 // and fail-closed behavior with a bogus key (no real key ever needed).

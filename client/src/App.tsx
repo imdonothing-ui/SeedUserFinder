@@ -1108,9 +1108,11 @@ function AiTab({ llm, flash, invalidate }: { llm?: State["llm"]; flash: (m: stri
   const configured = !!llm?.configured;
   const [f, setF] = useState({ apiKey: "", founderVoice: llm?.founderVoice ?? "" });
   const [testMsg, setTestMsg] = useState("");
-  const save = useMutation({ mutationFn: () => api.saveLlmSettings(f), onSuccess: () => { invalidate(); setF((v) => ({ ...v, apiKey: "" })); flash("Muse settings saved. Your Muse API key stays on the server and is never shown again — only its last 4 characters."); } });
+  const save = useMutation({ mutationFn: () => api.saveLlmSettings(f), onSuccess: (r) => { invalidate(); setF((v) => ({ ...v, apiKey: "" })); flash(r.message); } });
   const clear = useMutation({ mutationFn: () => api.clearLlmSettings({}), onSuccess: () => { invalidate(); flash("Muse settings removed. Muse is required, so the core flow is now blocked until you configure Muse again in the AI settings."); } });
-  const test = useMutation({ mutationFn: () => api.testLlmConnection({}), onSuccess: (r) => setTestMsg(r.message), onError: () => setTestMsg("Connection test failed — check your settings.") });
+  // Tests exactly what is in the key box (unsaved keys included) — the
+  // button no longer tests a stale stored key while you look at a new one.
+  const test = useMutation({ mutationFn: () => api.testLlmConnection({ apiKey: f.apiKey }), onSuccess: (r) => setTestMsg(r.message), onError: () => setTestMsg("Connection test failed — check your settings.") });
   const set = (k: keyof typeof f) => (e: { target: { value: string } }) => setF((v) => ({ ...v, [k]: e.target.value }));
 
   return (

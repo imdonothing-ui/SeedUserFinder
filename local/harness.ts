@@ -41,6 +41,11 @@ export async function boot() {
       keywords: "baby wakes at 5am, night feed tracking, sleep regression",
       coreAction: "Logged a night feed three nights in a row",
     });
+    seeded = true;
+  }
+  // The stub placeholder seeds once per database, never per boot: reseeding
+  // on every empty workspace buried real keys under duplicate stub rows.
+  if (!(await db.select().from(schema.llmSettings)).length) {
     await db.insert(schema.llmSettings).values({
       provider: "muse",
       apiKey: "local-stub-key",
@@ -50,7 +55,6 @@ export async function boot() {
       founderVoice: "",
       updatedAt: Date.now(),
     });
-    seeded = true;
   }
 
   const ctx = {
