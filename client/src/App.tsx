@@ -401,7 +401,12 @@ function FeedbackPanel({ profile, configured, feedback, summaries, flash, invali
 
 function ProfileTab({ profiles, activeProfile, onSelect, onDone, llm, flash, invalidate }: { profiles: Profile[]; activeProfile?: Profile; onSelect: (id: number) => void; onDone: (id?: number) => void; llm?: State["llm"]; flash: (m: string) => void; invalidate: () => void }) {
   const [isNew, setIsNew] = useState(false);
+  // Close collapses the card to a one-liner with an Open button — previously
+  // it was a no-op whenever the form wasn't in "new" mode.
+  const [closed, setClosed] = useState(false);
   const showPanels = !!activeProfile && !isNew;
+  useEffect(() => { setClosed(false); }, [activeProfile?.id, isNew]);
+  const closeCard = () => { setIsNew(false); setClosed(true); };
   return (
     <section className="mt-5 space-y-4" aria-label="Target profile">
       {profiles.length > 1 && (
@@ -413,13 +418,20 @@ function ProfileTab({ profiles, activeProfile, onSelect, onDone, llm, flash, inv
           <button type="button" className={btnGhost} onClick={() => setIsNew(true)}>New profile</button>
         </div>
       )}
+      {closed && !isNew ? (
+        <div className="mt-3 flex items-center justify-between gap-2 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-4">
+          <p className="text-sm text-[var(--dim)]">{activeProfile ? (<><span className="font-semibold text-[var(--text)]">{activeProfile.productName}</span> — {activeProfile.productDesc || "no description yet"}</>) : "No target profile yet."}</p>
+          <button type="button" className={btnGhost} onClick={() => setClosed(false)}>{activeProfile ? "Open profile" : "New profile"}</button>
+        </div>
+      ) : (
       <ProfileForm
         key={isNew ? "new" : (activeProfile?.id ?? "none")}
         existing={isNew ? undefined : activeProfile}
-        onDone={(id) => { setIsNew(false); onDone(id); }}
-        onClose={() => setIsNew(false)}
+        onDone={(id) => { setIsNew(false); setClosed(false); onDone(id); }}
+        onClose={closeCard}
         onNew={() => setIsNew(true)}
       />
+      )}
       {showPanels && activeProfile && (
         <PainLanguagePanel profile={activeProfile} configured={!!llm?.configured} flash={flash} invalidate={invalidate} />
       )}
