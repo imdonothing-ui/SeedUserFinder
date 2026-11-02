@@ -7,7 +7,7 @@ import { Database } from "bun:sqlite";
 import { eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/bun-sqlite";
 import { complete } from "./inference-stub.ts";
-import { Actions, analyseText, shouldRetryFetch, matchVariant, synonymsFor, sitemapLocs, slugTitleFor, sitemapForumsFor, filterSitemapLocs, sitemapCandidate, channelRecsFor, stackSitesFor, seCandidate, devtoTagsFor, lobstersFor, devtoCandidate, lobstersCandidate, ddgResults, groupVenues, mergeDiscovery, dynamicForumFor, parseExpansionPlan } from "../server/src/actions.ts";
+import { Actions, analyseText, shouldRetryFetch, matchVariant, synonymsFor, sitemapLocs, slugTitleFor, sitemapForumsFor, filterSitemapLocs, sitemapCandidate, channelRecsFor, stackSitesFor, seCandidate, devtoTagsFor, lobstersFor, devtoCandidate, lobstersCandidate, ddgResults, groupVenues, mergeDiscovery, dynamicForumFor, parseExpansionPlan, profileSignature } from "../server/src/actions.ts";
 import { META_MODEL, buildResponsesRequest, extractJsonValue, isDirectKey, completeViaMetaModel } from "../server/src/meta-api.ts";
 import { GATE_CORPUS, WILLOW, SECONDHIFT, DEV, MAKEUP, DAWNLITE } from "./gate-corpus.ts";
 import * as schema from "../server/src/schema.ts";
@@ -193,6 +193,19 @@ const mAction = (await call("recommendChannels", { profileId: mProf.id })) as an
 }
 check(parseExpansionPlan(JSON.stringify({ anchorTerm: "buy", queries: [], painPhrases: [], adjacentProblems: [], adjacentAudiences: [], communities: [{ name: "r/Flipping", where: "Reddit", channel: "reddit_poc", access: "closed", why: "flippers" }], relaxations: [], nextSuggestions: [], droppedUnanchored: 0 })) !== null, "communities-only plan parses usable", null);
 check(parseExpansionPlan("{}") === null && parseExpansionPlan("not json{{") === null, "empty/garbage plan parses unusable", null);
+// A profile's hunt belongs to its exact words: new/edited text gets a fresh
+// hunt, untouched text keeps its plan — never another profile's channels.
+const SIG_A = { productName: "Second hand market place", productDesc: "sell second hand stuff", audience: "buyers", pain: "no buyers", workaround: "", keywords: "", coreAction: "" };
+check(profileSignature(SIG_A) === profileSignature({ ...SIG_A, productName: "SECOND HAND MARKET PLACE" }), "signature ignores case/punctuation", null);
+check(profileSignature(SIG_A) !== profileSignature({ ...SIG_A, pain: "no sellers" }), "signature changes with the words", null);
+const sigProf = (await call("createProfile", { ...SIG_A })) as any;
+await call("generateExpansionPlan", { profileId: sigProf.id });
+const plansFor = async (id: number) => ((await state()).expansions as any[]).filter((x) => x.profileId === id).length;
+check((await plansFor(sigProf.id)) === 1, "new profile gains its plan", null);
+await call("updateProfile", { id: sigProf.id, ...SIG_A });
+check((await plansFor(sigProf.id)) === 1, "identical save keeps the plan", null);
+await call("updateProfile", { id: sigProf.id, ...SIG_A, audience: "sellers and buyers", pain: "no sellers" });
+check((await plansFor(sigProf.id)) === 0, "edited words retire the old plan so the hunt restarts", null);
 const dRecs2 = channelRecsFor(DEV, null).recs;
 check(!!dRecs2.find((r) => r.channel === "devto" && r.fit !== "poor") && !!dRecs2.find((r) => r.channel === "lobsters" && r.fit !== "poor"), "dev: devto + lobsters viable", null);
 // A plan community votes its channel up: Stack Exchange is poor for makeup

@@ -480,12 +480,16 @@ function SearchTab({ profile, expansions, llmConfigured, connections, channels, 
   // Channel likelihood runs itself: the first time a profile lands on Search
   // with no expansion plan, Muse figures out where these people talk before
   // the founder presses anything. Picks sharpen when the plan lands.
-  const autoPlanned = useRef(0);
+  // Keyed by the profile's exact words, not just its id: editing the text
+  // restarts the hunt by itself (the server drops plans for changed text),
+  // while an unchanged profile never plans twice.
+  const autoPlanned = useRef("");
+  const planTextKey = `${profile.id}:${[profile.productName, profile.productDesc, profile.audience, profile.pain, profile.workaround, profile.keywords, profile.coreAction].join("|")}`;
   useEffect(() => {
-    if (!llmConfigured || expansions.length > 0 || autoPlanned.current === profile.id || genPlan.isPending) return;
-    autoPlanned.current = profile.id;
+    if (!llmConfigured || expansions.length > 0 || autoPlanned.current === planTextKey || genPlan.isPending) return;
+    autoPlanned.current = planTextKey;
     genPlan.mutate();
-  }, [llmConfigured, expansions.length, profile.id]);
+  }, [llmConfigured, expansions.length, planTextKey]);
   const search = useMutation({
     mutationFn: () => api.searchLiveLeads({ profileId: profile.id, channels, subreddits: subs }),
     onSuccess: (r) => {
@@ -505,7 +509,7 @@ function SearchTab({ profile, expansions, llmConfigured, connections, channels, 
     <section className="mt-5 space-y-4">
       <div className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-4">
         <h2 className="font-serif text-lg font-bold">Discover your channels</h2>
-        <p className="mt-1 text-sm text-[var(--dim)]">Automatic — every profile gets its own channel hunt first. Your profile signals, a live web search for real discussion threads, and Muse's expansion plan each vote on where your people talk. No two profiles search the same places.</p>
+        <p className="mt-1 text-sm text-[var(--dim)]">Automatic — every profile gets its own channel hunt first. Your profile signals, a live web search for real discussion threads, and Muse's expansion plan each vote on where your people talk. No two profiles search the same places. Edit the profile and the hunt restarts by itself.</p>
         <ol className="mt-3 space-y-1.5 text-sm">
           <li><span className="font-semibold">✓ Target locked</span> <span className="text-[var(--dim)]">— {profile.productName}: {profile.productDesc || "no description yet"}</span></li>
           <li>{recsReady ? (

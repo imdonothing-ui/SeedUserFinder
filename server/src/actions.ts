@@ -743,8 +743,22 @@ export type DiscoveryFindings = {
   // fetch failure) — the UI must say so instead of claiming coverage.
   webOk: boolean;
 };
-const discoveryCache = new Map<number, { at: number; data: DiscoveryFindings }>();
-export function clearDiscoveryCache(profileId: number) { discoveryCache.delete(profileId); }
+// A profile's channel hunt belongs to its exact words: new profiles get a
+// cold hunt, and editing the text retires the old hunt automatically — a new
+// or edited profile can never see another (or older) profile's venues.
+export function profileSignature(profile: ProfileLike): string {
+  return normText([profile.productName, profile.productDesc, profile.audience, profile.pain, profile.workaround, profile.keywords, profile.coreAction].join(" "));
+}
+function discoveryCacheKey(profile: ProfileLike & { id: number }): string {
+  const sig = profileSignature(profile);
+  let h = 5381;
+  for (let i = 0; i < sig.length; i++) h = ((h << 5) + h + sig.charCodeAt(i)) >>> 0;
+  return `${profile.id}:${h.toString(36)}`;
+}
+const discoveryCache = new Map<string, { at: number; data: DiscoveryFindings }>();
+export function clearDiscoveryCache(profileId: number) {
+  for (const k of [...discoveryCache.keys()]) if (k === `${profileId}` || k.startsWith(`${profileId}:`)) discoveryCache.delete(k);
+}
 
 function discoveryAnchor(profile: ProfileLike): string {
   return (activeClusters(profile)[0]?.terms[0])
@@ -762,7 +776,8 @@ function discoveryQuery(profile: ProfileLike): string {
 }
 
 export async function discoverVenuesFor(profile: ProfileLike & { id: number }): Promise<DiscoveryFindings> {
-  const hit = discoveryCache.get(profile.id);
+  const key = discoveryCacheKey(profile);
+  const hit = discoveryCache.get(key);
   if (hit && Date.now() - hit.at < DISCOVERY_TTL_MS) return hit.data;
   const data: DiscoveryFindings = { evidence: [], dynamic: [], venues: [], webOk: false };
   const anchor = discoveryAnchor(profile);
@@ -793,7 +808,7 @@ export async function discoverVenuesFor(profile: ProfileLike & { id: number }): 
     data.venues.push({ name: labelFor(g.domain), where: g.domain, why: `Web search found ${g.urls.length} discussion thread${g.urls.length === 1 ? "" : "s"} about '${anchor}' here — e.g. “${g.titles[0]}”. No thread sitemap: join and add by hand.`, url: `https://${g.domain}/` });
   }
   data.webOk = true;
-  discoveryCache.set(profile.id, { at: Date.now(), data });
+  discoveryCache.set(key, { at: Date.now(), data });
   return data;
 }
 
@@ -1808,7 +1823,15 @@ export const Actions = {
     response: z.object({ ok: z.boolean() }),
     async handler(ctx, args) {
       const db = ctx.db<typeof schema>();
+      // A plan describes the profile's exact words: when the words change,
+      // the old plan's communities would vote stale channels up, so the hunt
+      // restarts by itself — the Search tab auto-generates a fresh plan from
+      // the new text with no button press. Unchanged text keeps its plan.
+      const before = (await db.select().from(schema.profiles).where(eq(schema.profiles.id, args.id)))[0];
       await db.update(schema.profiles).set({ productName: args.productName, productDesc: args.productDesc, audience: args.audience, pain: args.pain, workaround: args.workaround, keywords: args.keywords, coreAction: args.coreAction }).where(eq(schema.profiles.id, args.id));
+      if (before && profileSignature(before) !== profileSignature(args)) {
+        await db.delete(schema.searchExpansions).where(eq(schema.searchExpansions.profileId, args.id));
+      }
       clearDiscoveryCache(args.id);
       ctx.invalidateQueries();
       return { ok: true };
@@ -1831,6 +1854,7 @@ export const Actions = {
       await db.delete(schema.searchRuns).where(eq(schema.searchRuns.profileId, args.id));
       await db.delete(schema.followups).where(eq(schema.followups.profileId, args.id));
       await db.delete(schema.profiles).where(eq(schema.profiles.id, args.id));
+      clearDiscoveryCache(args.id);
       ctx.invalidateQueries();
       return { ok: true };
     },
