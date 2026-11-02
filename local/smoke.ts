@@ -205,6 +205,15 @@ const mAction = (await call("recommendChannels", { profileId: mProf.id })) as an
 }
 check(parseExpansionPlan(JSON.stringify({ anchorTerm: "buy", queries: [], painPhrases: [], adjacentProblems: [], adjacentAudiences: [], communities: [{ name: "r/Flipping", where: "Reddit", channel: "reddit_poc", access: "closed", why: "flippers" }], relaxations: [], nextSuggestions: [], droppedUnanchored: 0 })) !== null, "communities-only plan parses usable", null);
 check(parseExpansionPlan("{}") === null && parseExpansionPlan("not json{{") === null, "empty/garbage plan parses unusable", null);
+// Eurobricks (verified 2026-11-02: IPS sitemap index, Topic_1 freshest, ~500
+// threads/file, slugs in URLs) is the Lego waterhole; Brickset has no forum
+// any more (page points at Discord/Facebook) so it stays a venue, not a channel.
+const LEGO = { productName: "lego lover", productDesc: "help lego lover find precious and limited lego", audience: "lego collectors hunting rare sets", pain: "rare sets sell out before I find them", workaround: "refreshing reseller listings", keywords: "", coreAction: "" };
+check(sitemapForumsFor(LEGO).map((f) => f.channel).join(",") === "eurobricks", "lego fixture maps Eurobricks only", sitemapForumsFor(LEGO).map((f) => f.channel));
+check(!!channelRecsFor(LEGO, null).recs.find((r) => r.channel === "eurobricks" && r.fit === "best"), "lego: Eurobricks best, no other forum needed", null);
+const LEGO_KIN = { ...LEGO, audience: "parents buying for kids", pain: "can't find rare sets for my kids" };
+check(channelRecsFor(LEGO_KIN, null).recs.find((r) => r.channel === "mumsnet")?.fit === "poor", "lego cluster vetoes kin-only parenting-forum mapping", null);
+check(!sitemapForumsFor(MAKEUP).some((f) => f.channel === "eurobricks") && !sitemapForumsFor(DEV).some((f) => f.channel === "eurobricks"), "eurobricks stays dark for non-lego profiles", null);
 // A profile's hunt belongs to its exact words: new/edited text gets a fresh
 // hunt, untouched text keeps its plan — never another profile's channels.
 const SIG_A = { productName: "Second hand market place", productDesc: "sell second hand stuff", audience: "buyers", pain: "no buyers", workaround: "", keywords: "", coreAction: "" };

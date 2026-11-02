@@ -30,7 +30,7 @@ const CHANNEL_LABEL: Record<string, string> = {
   reddit: "Reddit · pasted", x: "X · pasted", facebook: "Facebook Group", discord: "Discord",
   slack: "Slack", linkedin: "LinkedIn DM", instagram: "Instagram DM", manual: "Manual",
 };
-const NEW_CHANNELS = new Set(["stackexchange", "agingcare", "mumsnet", "makeuptalk", "lipstickalley", "devto", "lobsters"]);
+const NEW_CHANNELS = new Set(["stackexchange", "agingcare", "mumsnet", "makeuptalk", "lipstickalley", "eurobricks", "devto", "lobsters"]);
 const STAGES = ["new", "drafted", "approved", "sent", "replied", "conversation", "trial"] as const;
 const STAGE_LABEL: Record<string, string> = { new: "Found", drafted: "Drafted", approved: "Approved", sent: "Sent", replied: "Replied", conversation: "Conversation", trial: "In trial", dismissed: "Dismissed" };
 const EVENT_TYPES = ["started", "core", "returned", "paid", "referred"] as const;
@@ -444,7 +444,7 @@ function ProfileTab({ profiles, activeProfile, onSelect, onDone, llm, flash, inv
 const CH_DESCRIPTOR: Record<string, string> = {
   bluesky: "public search", hackernews: "public search", github: "public search",
   stackexchange: "public Q&A", agingcare: "forum threads", mumsnet: "forum threads",
-  makeuptalk: "forum threads", lipstickalley: "forum threads", devto: "articles", lobsters: "dev discussion",
+  makeuptalk: "forum threads", lipstickalley: "forum threads", eurobricks: "forum threads", devto: "articles", lobsters: "dev discussion",
 };
 function descriptorFor(ch: string): string {
   return CH_DESCRIPTOR[ch] ?? (ch.startsWith("forum:") ? "forum threads" : "public search");
@@ -464,7 +464,7 @@ function SearchTab({ profile, expansions, llmConfigured, connections, channels, 
   const isFirstFeedback = profile.productName.trim().toLowerCase() === "firstfeedback";
   // Irrelevant channels are hidden, not displayed — one quiet line reveals
   // them for override. Channels searchable right now:
-  const EXECUTABLE = new Set(["bluesky", "hackernews", "github", "stackexchange", "agingcare", "mumsnet", "makeuptalk", "lipstickalley", "devto", "lobsters"]);
+  const EXECUTABLE = new Set(["bluesky", "hackernews", "github", "stackexchange", "agingcare", "mumsnet", "makeuptalk", "lipstickalley", "eurobricks", "devto", "lobsters"]);
 
   // Search-run progress: the server records real phases per run; the latest
   // run's plain-words summary is shown once it lands.
