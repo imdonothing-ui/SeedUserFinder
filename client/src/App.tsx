@@ -83,6 +83,9 @@ function AiConfigStatus({ llm, onEdit }: { llm?: State["llm"]; onEdit: () => voi
   return (
     <div className="mt-3 flex flex-wrap items-center gap-2 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-3 text-sm" aria-label="AI configuration status">
       <span className="rounded-full bg-[var(--accent-bg)] px-2 py-0.5 text-xs font-semibold text-[var(--accent)]">AI configured ✓</span>
+      {llm.direct
+        ? <span className="rounded-full bg-[var(--green-bg)] px-2 py-0.5 text-xs font-semibold text-[var(--accent)]">Live · Muse Spark 1.3</span>
+        : <span className="rounded-full bg-[var(--amber-bg)] px-2 py-0.5 text-xs font-semibold text-[var(--amber)]">Offline stub — judgments are test data until you enter an LLM| key</span>}
       <span className="text-[var(--dim)]">Muse · key {llm.keyHint || "saved"} · models automatic</span>
       <span className="text-[var(--dim)]">Saved once — you won't be asked again.</span>
       <button type="button" className={btnGhost + " ml-auto"} onClick={onEdit}>Edit AI config</button>
@@ -135,7 +138,7 @@ export function App() {
   const leads = useMemo(() => (data?.leads ?? []).filter((l) => !activeProfile || l.profileId === activeProfile.id), [data, activeProfile]);
   const invites = useMemo(() => (data?.invites ?? []).filter((i) => !activeProfile || i.profileId === activeProfile.id), [data, activeProfile]);
   const events = data?.events ?? [];
-  const insights = useMemo(() => (data?.insights ?? []).filter((i) => !activeProfile || i.profileId === activeProfile.id), [data, activeProfile]);
+
   const feedback = useMemo(() => (data?.feedback ?? []).filter((f) => !activeProfile || f.profileId === activeProfile.id), [data, activeProfile]);
   const summaries = useMemo(() => (data?.summaries ?? []).filter((s) => !activeProfile || s.profileId === activeProfile.id), [data, activeProfile]);
   const llm = data?.llm;
@@ -226,7 +229,7 @@ export function App() {
 
         {activeProfile && !llm?.configured && tab !== "settings" && tab !== "profile" && <LlmSetupGate onGoSettings={() => setTab("settings")} />}
 
-        {tab === "profile" && <ProfileTab profiles={profiles} activeProfile={activeProfile} onSelect={(id) => setProfileId(id)} onDone={(id) => { if (id) { setProfileId(id); setTab("search"); } invalidate(); }} llm={llm} insights={insights} flash={flash} invalidate={invalidate} />}
+        {tab === "profile" && <ProfileTab profiles={profiles} activeProfile={activeProfile} onSelect={(id) => setProfileId(id)} onDone={(id) => { if (id) { setProfileId(id); setTab("search"); } invalidate(); }} llm={llm} flash={flash} invalidate={invalidate} />}
         {llm?.configured && activeProfile && tab === "search" && <SearchTab profile={activeProfile} expansions={(data?.expansions ?? []).filter((x) => x.profileId === activeProfile.id)} llmConfigured={!!llm?.configured} connections={data?.connections ?? []} channels={channels} setChannels={(c) => { channelsTouched.current = true; setChannels(c); }} subs={subs} setSubs={setSubs} recReasons={recReasons} recFit={recFit} openRecs={openRecs} recVenues={recVenues} recsReady={!!recQ.data} recMessage={recMessage} runId={runId} setRunId={setRunId} setLastSearch={setLastSearch} result={searchResult} setResult={setSearchResult} onGoSettings={() => setTab("settings")} onDone={() => setTab("results")} flash={flash} invalidate={invalidate} />}
         {llm?.configured && activeProfile && tab === "results" && <ResultsTab profile={activeProfile} leads={leads} expansions={(data?.expansions ?? []).filter((x) => x.profileId === activeProfile.id)} llmConfigured={!!llm?.configured} channels={channels} subs={subs} sortByScore={sortByScore} setSortByScore={setSortByScore} lastSearch={lastSearch} setLastSearch={setLastSearch} setRunId={setRunId} flash={flash} invalidate={invalidate} />}
         {llm?.configured && activeProfile && tab === "tracker" && <TrackerTab leads={leads} profile={activeProfile} followups={(data?.followups ?? []).filter((f) => f.profileId === activeProfile.id)} flash={flash} invalidate={invalidate} />}
@@ -371,7 +374,7 @@ function FeedbackPanel({ profile, configured, feedback, summaries, flash, invali
   );
 }
 
-function ProfileTab({ profiles, activeProfile, onSelect, onDone, llm, insights, flash, invalidate }: { profiles: Profile[]; activeProfile?: Profile; onSelect: (id: number) => void; onDone: (id?: number) => void; llm?: State["llm"]; insights: State["insights"]; flash: (m: string) => void; invalidate: () => void }) {
+function ProfileTab({ profiles, activeProfile, onSelect, onDone, llm, flash, invalidate }: { profiles: Profile[]; activeProfile?: Profile; onSelect: (id: number) => void; onDone: (id?: number) => void; llm?: State["llm"]; flash: (m: string) => void; invalidate: () => void }) {
   const [isNew, setIsNew] = useState(false);
   const showPanels = !!activeProfile && !isNew;
   return (
@@ -392,10 +395,7 @@ function ProfileTab({ profiles, activeProfile, onSelect, onDone, llm, insights, 
         onClose={() => setIsNew(false)}
       />
       {showPanels && activeProfile && (
-        <>
-          <PainLanguagePanel profile={activeProfile} configured={!!llm?.configured} flash={flash} invalidate={invalidate} />
-          <InsightForm profile={activeProfile} insights={insights} llmConfigured={!!llm?.configured} flash={flash} invalidate={invalidate} />
-        </>
+        <PainLanguagePanel profile={activeProfile} configured={!!llm?.configured} flash={flash} invalidate={invalidate} />
       )}
     </section>
   );
@@ -1070,7 +1070,7 @@ function AiTab({ llm, flash, invalidate }: { llm?: State["llm"]; flash: (m: stri
         <div className="flex flex-wrap items-center gap-2">
           <h3 className="font-serif text-base font-bold">{configured ? "Edit AI config" : "Muse LLM settings"}</h3>
           {configured
-            ? <span className="rounded-full bg-[var(--accent-bg)] px-2 py-0.5 text-xs font-semibold text-[var(--accent)]">Configured ✓ · Muse · key {llm?.keyHint} · saved — not asked again</span>
+            ? <span className="rounded-full bg-[var(--accent-bg)] px-2 py-0.5 text-xs font-semibold text-[var(--accent)]">Configured ✓ · Muse · key {llm?.keyHint} · {llm?.direct ? "live" : "offline stub"} · saved — not asked again</span>
             : <span className="rounded-full bg-[var(--amber-bg)] px-2 py-0.5 text-xs font-bold text-[var(--amber)]">Setup required — core flow blocked until Muse is configured</span>}
         </div>
         <p className="text-sm text-[var(--dim)]">The provider is <strong>Muse</strong> — every AI feature in EarlyProof runs on Muse Spark 1.3, and Muse setup is required before the core flow unlocks. Enter your Muse Model API key here in the app — never in chat. A key starting with <strong>LLM|</strong> calls Muse Spark 1.3 directly; any other key is served by the workspace model runtime. The key is stored server-side for this workspace, used only when you run an AI action, and never displayed again.</p>
@@ -1220,29 +1220,4 @@ function ChannelsTab({ connections, flash, invalidate }: { connections: State["c
   );
 }
 
-function InsightForm({ profile, insights, llmConfigured, flash, invalidate }: { profile: Profile; insights: State["insights"]; llmConfigured: boolean; flash: (m: string) => void; invalidate: () => void }) {
-  const [f, setF] = useState({ sourceLabel: "", rawText: "" });
-  const add = useMutation({ mutationFn: () => api.addInsight({ profileId: profile.id, ...f }), onSuccess: (r) => { invalidate(); setF({ sourceLabel: "", rawText: "" }); flash(r.painLanguage ? "Insight saved — pain language extracted below. Fold the sharpest phrases into your profile keywords." : r.llmStatus === "not_configured" ? "Insight saved, but pain-language extraction is blocked: Muse setup is required. Enter your Muse API key in Settings — in the app only — then re-run extraction by saving the review again." : "Insight saved."); } });
-  const del = useMutation({ mutationFn: (id: number) => api.deleteInsight({ id }), onSuccess: () => invalidate() });
-  return (
-    <div className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-4">
-      <h3 className="font-serif text-base font-bold">Competitor reviews — insight only</h3>
-      <p className="mt-1 text-sm text-[var(--dim)]">You can't message a reviewer, and poaching them publicly looks bad. Paste a 1–3★ review here instead: EarlyProof extracts the pain language so you can find the same person, saying the same words, on a channel where you can actually reach them.</p>
-      {!llmConfigured && <p className="mt-2 rounded-[var(--radius)] bg-[var(--amber-bg)] p-2 text-sm text-[var(--amber)]"><strong>Setup required:</strong> extraction runs on your Muse model, so it stays blocked until Muse is configured in Settings.</p>}
-      <form className="mt-2 space-y-2" onSubmit={(e: FormEvent) => { e.preventDefault(); add.mutate(); }}>
-        <div><label htmlFor="ins-src" className={labelCls}>Source</label><input id="ins-src" aria-label="Review source" value={f.sourceLabel} onChange={(e) => setF((v) => ({ ...v, sourceLabel: e.target.value }))} className={inputCls} placeholder="e.g. App Store review of CompetitorX, 2★" /></div>
-        <div><label htmlFor="ins-text" className={labelCls}>Review text</label><textarea id="ins-text" aria-label="Review text" required rows={3} value={f.rawText} onChange={(e) => setF((v) => ({ ...v, rawText: e.target.value }))} className={inputCls} placeholder="Paste the review…" /></div>
-        <button type="submit" className={btnPrimary} disabled={add.isPending}>{add.isPending ? "Extracting…" : "Save insight"}</button>
-      </form>
-      <div className="mt-3 space-y-2">
-        {insights.map((i) => (
-          <div key={i.id} className="rounded-[var(--radius)] border border-[var(--border)] p-3 text-sm">
-            <p className="font-semibold">{i.sourceLabel || "Review"} <button type="button" className={btnSmall + " float-right"} aria-label={`Delete insight ${i.id}`} onClick={() => del.mutate(i.id)}>Delete</button></p>
-            <p className="mt-1 text-[var(--dim)]">“{i.rawText.slice(0, 220)}”</p>
-            {i.painLanguage && <p className="mt-1"><span className="font-semibold text-[var(--accent)]">Pain language:</span> {i.painLanguage}</p>}
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
+

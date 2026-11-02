@@ -1,5 +1,5 @@
 import { defineAction, z, type ActionsModule, type Ctx } from "@hatch/space-sdk";
-import { desc, eq, and } from "drizzle-orm";
+import { desc, eq, and, or, like, inArray } from "drizzle-orm";
 import type { BunSQLiteDatabase } from "drizzle-orm/bun-sqlite";
 import { META_MODEL, completeViaMetaModel, isDirectKey } from "./meta-api";
 import * as schema from "./schema";
@@ -1671,7 +1671,7 @@ const leadOut = z.object({
   llmCategory: z.string(), llmConfidence: z.number(), llmReason: z.string(), llmQuote: z.string(),
   llmSignals: z.string(), llmReviewed: z.boolean(), draftToneCheck: z.string(),
 });
-const llmStatusOut = z.object({ configured: z.boolean(), provider: z.string(), hasKey: z.boolean(), keyHint: z.string(), baseUrl: z.string(), smallModel: z.string(), largeModel: z.string(), founderVoice: z.string() });
+const llmStatusOut = z.object({ configured: z.boolean(), provider: z.string(), hasKey: z.boolean(), keyHint: z.string(), direct: z.boolean(), baseUrl: z.string(), smallModel: z.string(), largeModel: z.string(), founderVoice: z.string() });
 const feedbackOut = z.object({ id: z.number(), profileId: z.number(), seedName: z.string(), source: z.string(), rawText: z.string(), created_at: z.string() });
 const summaryOut = z.object({ id: z.number(), profileId: z.number(), kind: z.string(), content: z.string(), created_at: z.string() });
 
@@ -1729,6 +1729,7 @@ export const Actions = {
           provider: "muse",
           hasKey: !!(llmRow?.apiKey.trim()),
           keyHint: llmRow?.apiKey.trim() ? `••••${llmRow.apiKey.trim().slice(-4)}` : "",
+          direct: !!(llmRow?.apiKey.trim() && isDirectKey(llmRow.apiKey)),
           baseUrl: llmRow?.baseUrl ?? "",
           smallModel: llmRow?.smallModel ?? "",
           largeModel: llmRow?.largeModel ?? "",
@@ -2564,11 +2565,61 @@ export const Actions = {
         const t0 = Date.now();
         const r = await completeViaMetaModel("Connection test: reply with the single word ok.", s.apiKey, META_MODEL);
         if (!r.ok) return { ok: false, status: "error", message: `Direct ${META_MODEL} call failed (${r.error}). Check the key and Model API quota.` };
-        return { ok: true, status: "ok", message: `Direct ${META_MODEL} via Model API answered in ${((Date.now() - t0) / 1000).toFixed(1)}s — the key works and all Muse calls will use it.` };
+        // The key is real, so any stub-tagged data still on screen is stale
+        // test output — clear it now so live Muse fills the gaps (phrases
+        // re-expand by themselves, waiting leads re-synthesize on Results).
+        let cleared = "";
+        try {
+          const purge = await Actions.purgeStubData.handler(ctx, {});
+          if (purge.profilesCleared || purge.leadsCleared) cleared = ` ${purge.message}`;
+        } catch { /* purge is best-effort beside a passing test */ }
+        return { ok: true, status: "ok", message: `Direct ${META_MODEL} via Model API answered in ${((Date.now() - t0) / 1000).toFixed(1)}s — the key works and all Muse calls will use it.${cleared}` };
       }
       const r = await runLlm(ctx, "small", "Connection test: reply with a short confirmation that you received this.", z.string());
       if (!r.ok) return { ok: false, status: r.status, message: r.message };
+      // The offline stub answers this exact prompt with a tagged canned
+      // string. Calling that a passed test is a lie that strands founders on
+      // stub verdicts — fail it honestly instead.
+      if (typeof r.value === "string" && r.value.includes("[local-stub]")) {
+        return { ok: false, status: "stub", message: "That answer came from the offline test stub, not a model — this machine has no model runtime. Enter an LLM| key for live Muse Spark 1.3, then test again." };
+      }
       return { ok: true, status: "ok", message: "Workspace model runtime answered — models are picked automatically (fast tier for first passes, large tier for drafts and summaries)." };
+    },
+  }),
+
+  // Stub-data purge: everything tagged [local-stub] is test output. When a
+  // real key arrives, one call clears it so live Muse fills the gaps —
+  // phrases reset (auto-expansion refires), stub verdicts and drafts on
+  // untouched leads revert to unclassified/blank. Approved/sent leads and
+  // founder-written content are never touched.
+  purgeStubData: defineAction({
+    request: z.object({}),
+    response: z.object({ ok: z.boolean(), message: z.string(), profilesCleared: z.number(), leadsCleared: z.number() }),
+    async handler(ctx) {
+      const db = ctx.db<typeof schema>();
+      const MARK = "%[local-stub]%";
+      const profRows = await db.select().from(schema.profiles)
+        .where(or(like(schema.profiles.painPhrases, MARK), like(schema.profiles.workaroundPhrases, MARK), like(schema.profiles.exclusions, MARK), like(schema.profiles.keywords, MARK)));
+      const cleanPhrases = (s: string) => {
+        try {
+          const v: unknown = JSON.parse(s || "[]");
+          if (Array.isArray(v) && v.some((x) => typeof x === "string" && x.includes("[local-stub]"))) return "[]";
+        } catch { /* keep */ }
+        return s;
+      };
+      for (const p of profRows) {
+        const keywords = p.keywords.split(",").map((s) => s.trim()).filter((s) => s && !s.includes("[local-stub]")).join(", ");
+        await db.update(schema.profiles).set({ painPhrases: cleanPhrases(p.painPhrases), workaroundPhrases: cleanPhrases(p.workaroundPhrases), exclusions: cleanPhrases(p.exclusions), keywords }).where(eq(schema.profiles.id, p.id));
+      }
+      const leadRows = await db.select({ id: schema.leads.id }).from(schema.leads).where(and(
+        inArray(schema.leads.status, ["new", "drafted"]),
+        or(like(schema.leads.llmReason, MARK), like(schema.leads.llmQuote, MARK), like(schema.leads.draftBody, MARK)),
+      ));
+      for (const l of leadRows) {
+        await db.update(schema.leads).set({ llmCategory: "", llmConfidence: 0, llmReason: "", llmQuote: "", llmSignals: "", llmHash: "", llmReviewed: 0, draftBody: "" }).where(eq(schema.leads.id, l.id));
+      }
+      ctx.invalidateQueries();
+      return { ok: true, message: `Cleared stub test data from ${profRows.length} profile${profRows.length === 1 ? "" : "s"} and ${leadRows.length} lead${leadRows.length === 1 ? "" : "s"} — live Muse fills the gaps from here.`, profilesCleared: profRows.length, leadsCleared: leadRows.length };
     },
   }),
 

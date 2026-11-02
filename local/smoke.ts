@@ -77,7 +77,12 @@ await call("saveLlmSettings", { apiKey: "k-9999", founderVoice: "plain" });
 const llm = (await state()).llm;
 check(llm.hasKey === true && llm.smallModel === "auto" && llm.largeModel === "auto", "key-only setup stores key, models auto", llm);
 const tst = (await call("testLlmConnection", {})) as any;
-check(tst.ok === true, "stub connection test passes", tst);
+check(tst.ok === false && tst.status === "stub", "stub connection test fails honestly instead of fake-passing", tst);
+// Live-key flag: an LLM| key reports the direct path without any network.
+await call("saveLlmSettings", { apiKey: "LLM|test|secret", founderVoice: "plain" });
+check((await state()).llm.direct === true, "LLM| key reports direct path", null);
+await call("saveLlmSettings", { apiKey: "k-9999", founderVoice: "plain" });
+check((await state()).llm.direct === false, "plain key reports runtime path", null);
 
 // 2b. Direct Muse Spark path: key routing, request shape, response reading,
 // and fail-closed behavior with a bogus key (no real key ever needed).
@@ -379,5 +384,22 @@ const recOk = (await call("recordEvent", { code: "demo-01", eventType: "started"
 check(recOk.ok === true && typeof recOk.message === "string", "recordEvent accepts invite code (any case)", recOk);
 const recBad = (await call("recordEvent", { code: "NOPE-00", eventType: "started", note: "" })) as any;
 check(recBad.ok === false, "recordEvent rejects unknown code", recBad);
+
+// 14. Stub-data purge: stub-tagged phrases, verdicts and drafts clear;
+// real content and decided leads survive.
+const sp = (await call("createProfile", { productName: "Stubby", productDesc: "d", audience: "a", pain: "p", workaround: "", keywords: "", coreAction: "" })) as any;
+await call("expandPainLanguage", { profileId: sp.id });
+const sl = (await call("addPastedLead", { profileId: sp.id, channel: "reddit", externalUrl: "https://example.com/s", author: "Zed", title: "laid off", body: "Laid off, need income now", community: "r/x" })) as any;
+await call("classifyLeads", { profileId: sp.id });
+await call("generateDraft", { leadId: sl.id });
+const before = (await state());
+const beforeLead = before.leads.find((l: any) => l.id === sl.id);
+check(beforeLead?.llmReason.includes("[local-stub]") === true, "stub verdict present before purge", null);
+const purge = (await call("purgeStubData", {})) as any;
+check(purge.ok === true && purge.profilesCleared >= 1 && purge.leadsCleared >= 1, "purge clears stub profiles and leads", purge);
+const after = (await state());
+const afterProf = after.profiles.find((p: any) => p.id === sp.id);
+const afterLead = after.leads.find((l: any) => l.id === sl.id);
+check(afterProf?.painPhrases === "[]" && afterLead?.llmCategory === "" && afterLead?.draftBody === "", "stub phrases, verdict and draft cleared; lead unclassified", { pain: afterProf?.painPhrases, cat: afterLead?.llmCategory });
 
 console.log(`\nSMOKE PASSED (${n} checks)`);
