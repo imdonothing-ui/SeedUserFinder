@@ -251,31 +251,50 @@ export function App() {
   );
 }
 
-function ProfileForm({ existing, onDone, onClose }: { existing?: Profile; onDone: (id?: number) => void; onClose: () => void }) {
+function ProfileForm({ existing, onDone, onClose, onNew }: { existing?: Profile; onDone: (id?: number) => void; onClose: () => void; onNew: () => void }) {
   const blank = { productName: "", productDesc: "", audience: "", pain: "", workaround: "", keywords: "", coreAction: "" };
-  // The form shows three fields; the rest travel through untouched so an
-  // edit never wipes keywords, workaround or core action.
+  // A new profile always starts blank — never seeded from another profile's
+  // hidden fields. An edit keeps its own hidden fields; switching modes or
+  // profiles resyncs from scratch.
   const fromExisting = () => ({ ...blank, productName: existing?.productName ?? "", productDesc: existing?.productDesc ?? "", audience: existing?.audience ?? "", pain: existing?.pain ?? "", workaround: existing?.workaround ?? "", keywords: existing?.keywords ?? "", coreAction: existing?.coreAction ?? "" });
   const [f, setF] = useState(fromExisting);
   const [editing, setEditing] = useState(false);
   // Resync when the async profile loads or the founder switches profiles —
   // otherwise the form shows the previous (or empty) profile's values.
   useEffect(() => { setF(fromExisting()); setEditing(false); }, [existing?.id]);
-  const create = useMutation({ mutationFn: () => api.createProfile(f), onSuccess: (r) => onDone(r.id) });
+  const create = useMutation({ mutationFn: () => api.createProfile({ ...blank, productName: f.productName, productDesc: f.productDesc, audience: f.audience, pain: f.pain }), onSuccess: (r) => onDone(r.id) });
   const update = useMutation({ mutationFn: () => api.updateProfile({ id: existing?.id ?? 0, ...f }), onSuccess: () => onDone() });
   const del = useMutation({ mutationFn: () => api.deleteProfile({ id: existing?.id ?? 0 }), onSuccess: () => onDone() });
   const set = (k: "productName" | "productDesc" | "audience" | "pain") => (e: { target: { value: string } }) => setF((v) => ({ ...v, [k]: e.target.value }));
+  // Viewing an existing profile is read-only: typing here can no longer mint
+  // a "new" profile carrying this profile's hidden keywords and workaround.
+  if (existing && !editing) {
+    const hidden = [existing.keywords && `keywords: ${existing.keywords}`, existing.workaround && `workaround: ${existing.workaround}`, existing.coreAction && `core action: ${existing.coreAction}`].filter(Boolean);
+    return (
+      <div className="mt-3 space-y-3 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-4">
+        <h2 className="font-serif text-lg font-bold">Target profile</h2>
+        <p className="text-sm"><span className="font-semibold">{existing.productName}</span> <span className="text-[var(--dim)]">— {existing.productDesc || "no description yet"}</span></p>
+        <p className="text-sm text-[var(--dim)]">{existing.audience ? `${existing.audience}${existing.pain ? ` — ${existing.pain}` : ""}` : (existing.pain || "No audience set yet.")}</p>
+        {hidden.length > 0 && <p className="text-xs text-[var(--dim)]">Also shaping this profile's hunt — {hidden.join(" · ")}</p>}
+        <div className="flex flex-wrap gap-2">
+          <button type="button" className={btnPrimary} onClick={() => setEditing(true)}>Edit this profile</button>
+          <button type="button" className={btnGhost} onClick={onNew}>New profile</button>
+          <button type="button" className={btnGhost} onClick={() => { if (window.confirm("Delete this profile and everything under it (leads, invites, events, nudges)?")) del.mutate(); }}>Delete profile</button>
+          <button type="button" className={btnGhost} onClick={onClose}>Close</button>
+        </div>
+      </div>
+    );
+  }
   return (
     <form className="mt-3 space-y-3 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-4" onSubmit={(e: FormEvent) => { e.preventDefault(); if (editing && existing) update.mutate(); else create.mutate(); }}>
-      <h2 className="font-serif text-lg font-bold">Target profile</h2>
+      <h2 className="font-serif text-lg font-bold">{existing ? "Edit profile" : "Target profile"}</h2>
       <p className="text-sm text-[var(--dim)]">Three fields. This is the first step — everything else (AI config, search, synthesis) builds on this profile. Be narrow. “New parents whose baby wakes at 5am” finds people; “parents” finds nobody.</p>
       <div><label htmlFor="pf-name" className={labelCls}>Product name</label><input id="pf-name" aria-label="Product name" required value={f.productName} onChange={set("productName")} className={inputCls} placeholder="e.g. DawnFeed" /></div>
       <div><label htmlFor="pf-desc" className={labelCls}>What it does, in one line</label><input id="pf-desc" aria-label="What your product does" value={f.productDesc} onChange={set("productDesc")} className={inputCls} placeholder="e.g. Tracks night feeds and predicts the next wake window" /></div>
       <div><label htmlFor="pf-aud" className={labelCls}>Whose problem it solves — and what that problem is, in their words</label><textarea id="pf-aud" aria-label="Whose problem and what problem" rows={3} value={f.audience ? `${f.audience}${f.pain ? ` — ${f.pain}` : ""}` : f.pain} onChange={(e) => { const v = e.target.value; const i = v.indexOf(" — "); setF((prev) => ({ ...prev, audience: i >= 0 ? v.slice(0, i) : v, pain: i >= 0 ? v.slice(i + 3) : "" })); }} className={inputCls} placeholder="e.g. First-time parents in the first 6 months — I never know if she'll sleep through or wake screaming at 5am" /></div>
       <div className="flex flex-wrap gap-2">
         <button type="submit" className={btnPrimary} disabled={create.isPending || update.isPending}>{editing && existing ? "Save changes" : "Create profile"}</button>
-        {existing && !editing && <button type="button" className={btnGhost} onClick={() => setEditing(true)}>Edit this profile instead</button>}
-        {existing && <button type="button" className={btnGhost} onClick={() => { if (window.confirm("Delete this profile and everything under it (leads, invites, events, nudges)?")) del.mutate(); }}>Delete profile</button>}
+        {editing && existing && <button type="button" className={btnGhost} onClick={() => { setF(fromExisting()); setEditing(false); }}>Cancel</button>}
         <button type="button" className={btnGhost} onClick={onClose}>Close</button>
       </div>
       {(create.error || update.error) && <p className="text-sm text-[var(--red)]">Saving failed — try again.</p>}
@@ -399,6 +418,7 @@ function ProfileTab({ profiles, activeProfile, onSelect, onDone, llm, flash, inv
         existing={isNew ? undefined : activeProfile}
         onDone={(id) => { setIsNew(false); onDone(id); }}
         onClose={() => setIsNew(false)}
+        onNew={() => setIsNew(true)}
       />
       {showPanels && activeProfile && (
         <PainLanguagePanel profile={activeProfile} configured={!!llm?.configured} flash={flash} invalidate={invalidate} />

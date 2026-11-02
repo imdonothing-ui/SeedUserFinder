@@ -421,6 +421,9 @@ check(recBad.ok === false, "recordEvent rejects unknown code", recBad);
 // real content and decided leads survive.
 const sp = (await call("createProfile", { productName: "Stubby", productDesc: "d", audience: "a", pain: "p", workaround: "", keywords: "", coreAction: "" })) as any;
 await call("expandPainLanguage", { profileId: sp.id });
+await call("applyExpansionToKeywords", { profileId: sp.id });
+const spKw = ((await state()).profiles as any[]).find((p) => p.id === sp.id)?.keywords ?? "";
+check(!spKw.includes("[local-stub]"), "stub phrases never fold into real keywords", spKw);
 const sl = (await call("addPastedLead", { profileId: sp.id, channel: "reddit", externalUrl: "https://example.com/s", author: "Zed", title: "laid off", body: "Laid off, need income now", community: "r/x" })) as any;
 await call("classifyLeads", { profileId: sp.id });
 await call("generateDraft", { leadId: sl.id });

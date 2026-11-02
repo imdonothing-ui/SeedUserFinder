@@ -2729,7 +2729,11 @@ export const Actions = {
       const phrases: string[] = (() => { try { const v = JSON.parse(p.painPhrases || "[]") as unknown; return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : []; } catch { return []; } })();
       const existing = p.keywords.split(",").map((s) => s.trim()).filter(Boolean);
       const merged = [...existing];
-      for (const ph of phrases.slice(0, 6)) if (!merged.some((k) => k.toLowerCase() === ph.toLowerCase())) merged.push(ph);
+      // Stub honesty: offline test phrases must never leak into real keywords.
+      for (const ph of phrases.slice(0, 6)) {
+        if (ph.includes("[local-stub]")) continue;
+        if (!merged.some((k) => k.toLowerCase() === ph.toLowerCase())) merged.push(ph);
+      }
       const keywords = merged.join(", ");
       await db.update(schema.profiles).set({ keywords }).where(eq(schema.profiles.id, p.id));
       ctx.invalidateQueries();
