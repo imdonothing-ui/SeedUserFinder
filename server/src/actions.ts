@@ -803,6 +803,12 @@ const ISSUE_SIGNALS = ["bug", "bugs", "error", "errors", "broken", "issue", "iss
 const LIFE_SIGNALS = ["parent", "parents", "baby", "kids", "pregnancy", "pregnant", "health", "patient", "caregiver", "dementia", "alzheimer", "medication", "meds", "wedding", "landlord", "tenant", "pet", "dog", "marriage", "divorce"];
 const FAMILY_SIGNALS = ["parent", "parents", "baby", "kids", "pregnancy", "pregnant", "caregiver", "dementia", "marriage", "divorce"];
 const MONEY_SIGNALS = ["income", "paycheck", "severance", "debt", "salary", "budget", "rent", "mortgage", "investing", "passive income"];
+// Verified 2026-11-01: no pet sitemap forum survived (PetForums.com
+// Cloudflare-walls its sitemap path; dogforums/catforum/petforums.co.uk/
+// paw-talk all serve stale indexes whose XML files 404; PetCoach is dead;
+// VetInfo is 9k static articles, not threads). Pets live on Stack Exchange
+// plus whatever web discovery finds per profile.
+const PET_SIGNALS = ["pet", "pets", "dog", "dogs", "puppy", "puppies", "cat", "cats", "kitten", "kittens", "pet food", "dog food", "cat food", "kibble", "vet", "veterinarian", "pet owner", "dog owner", "cat owner", "breed", "breeder"];
 
 function countSignals(normHaystack: string, signals: string[]): number {
   let n = 0;
@@ -909,6 +915,7 @@ export function stackSitesFor(profile: ProfileLike): string[] {
   if (countSignals(hay, CAREER_SIGNALS) >= 2) sites.push("workplace", "freelancing");
   if (countSignals(hay, FAMILY_SIGNALS) >= 2) sites.push("parenting");
   if (countSignals(hay, MONEY_SIGNALS) >= 2) sites.push("money");
+  if (countSignals(hay, PET_SIGNALS) >= 2) sites.push("pets");
   return [...new Set(sites)].slice(0, 2);
 }
 
