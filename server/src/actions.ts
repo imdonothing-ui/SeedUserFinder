@@ -1,7 +1,7 @@
 import { defineAction, z, type ActionsModule, type Ctx } from "@hatch/space-sdk";
 import { desc, eq, and, or, like, inArray } from "drizzle-orm";
 import type { BunSQLiteDatabase } from "drizzle-orm/bun-sqlite";
-import { META_MODEL, completeViaMetaModel, isDirectKey } from "./meta-api";
+import { META_MODEL, completeViaMetaModel, completeViaMetaModelText, isDirectKey } from "./meta-api";
 import * as schema from "./schema";
 
 type Db = BunSQLiteDatabase<typeof schema>;
@@ -2726,10 +2726,11 @@ export const Actions = {
       if (!candidate) return { ok: false, status: "not_configured", message: "No key to test — paste your Muse API key first, then test." };
       if (typed || isDirectKey(candidate) || cachedRoute(candidate) !== "runtime") {
         const t0 = Date.now();
-        const r = await completeViaMetaModel("Connection test: reply with the single word ok.", candidate, META_MODEL);
+        const r = await completeViaMetaModelText("Connection test: reply with the single word ok.", candidate, META_MODEL);
         if (r.ok) {
           rememberRoute(candidate, "direct");
-          if (typed) return { ok: true, status: "ok", message: `That key reaches ${META_MODEL} directly in ${((Date.now() - t0) / 1000).toFixed(1)}s — hit Save to activate it.` };
+          const heard = r.text.length > 60 ? `${r.text.slice(0, 60)}…` : r.text;
+          if (typed) return { ok: true, status: "ok", message: `That key reaches ${META_MODEL} directly (answered “${heard}” in ${((Date.now() - t0) / 1000).toFixed(1)}s) — hit Save to activate it.` };
           // The stored key is real, so any stub-tagged data still on screen
           // is stale test output — clear it now so live Muse fills the gaps
           // (phrases re-expand by themselves, waiting leads re-synthesize on
@@ -2739,7 +2740,7 @@ export const Actions = {
             const purge = await Actions.purgeStubData.handler(ctx, {});
             if (purge.profilesCleared || purge.leadsCleared) cleared = ` ${purge.message}`;
           } catch { /* purge is best-effort beside a passing test */ }
-          return { ok: true, status: "ok", message: `Direct ${META_MODEL} via Model API answered in ${((Date.now() - t0) / 1000).toFixed(1)}s — the key works and all Muse calls will use it.${cleared}` };
+          return { ok: true, status: "ok", message: `Direct ${META_MODEL} via Model API answered “${heard}” in ${((Date.now() - t0) / 1000).toFixed(1)}s — the key works and all Muse calls will use it.${cleared}` };
         }
         // The API rejected the key (or was unreachable). A typed key and an
         // LLM| key fail here with the verdict — the stored non-API key falls

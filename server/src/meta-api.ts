@@ -29,9 +29,11 @@ export function buildResponsesRequest(prompt: string, apiKey: string, model = ME
 
 // Pure response reading (unit-tested): Responses API `output_text`, the
 // `output[].content[].text` item shape, or Chat Completions
-// `choices[0].message.content` — then the largest {...} JSON block, the
-// same extraction the runtime path applies before schema validation.
-export function extractJsonValue(payload: unknown): unknown {
+// `choices[0].message.content` — as plain text. JSON tasks take the largest
+// {...} block from that text (the same extraction the runtime path applies
+// before schema validation); the connection probe takes the text itself, so
+// a plain-word answer like "ok" counts instead of failing as "no JSON".
+export function extractResponseText(payload: unknown): string {
   const texts: string[] = [];
   const o = (payload ?? {}) as Record<string, unknown>;
   if (typeof o.output_text === "string") texts.push(o.output_text);
@@ -49,7 +51,10 @@ export function extractJsonValue(payload: unknown): unknown {
   const msg = (choices[0] as Record<string, unknown> | undefined)?.message as Record<string, unknown> | undefined;
   if (typeof msg?.content === "string") texts.push(msg.content);
   if (typeof payload === "string") texts.push(payload);
-  const joined = texts.join("\n");
+  return texts.join("\n").trim();
+}
+export function extractJsonValue(payload: unknown): unknown {
+  const joined = extractResponseText(payload);
   const matches = joined.match(/\{[\s\S]*\}/g) ?? [];
   let best: unknown = null;
   for (const m of matches) {
@@ -82,6 +87,35 @@ export async function completeViaMetaModel(
     const value = extractJsonValue(data);
     if (typeof value !== "object" || value === null) return { ok: false, error: "no usable JSON in response" };
     return { ok: true, value, model };
+  } catch (e) {
+    return { ok: false, error: String(e).slice(0, 120) };
+  }
+}
+
+// Plain-text twin for the connection probe: the probe asks for a single
+// word, so it judges the model's words — not a JSON block that was never
+// asked for. Model tasks (plans, verdicts, drafts) keep using the JSON
+// variant above.
+export async function completeViaMetaModelText(
+  prompt: string,
+  apiKey: string,
+  model = META_MODEL,
+): Promise<{ ok: true; text: string; model: string } | { ok: false; error: string }> {
+  const req = buildResponsesRequest(prompt, apiKey, model);
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), DIRECT_TIMEOUT_MS);
+    let res: Response;
+    try {
+      res = await fetch(req.url, { method: "POST", headers: req.headers, body: req.body, signal: ctrl.signal });
+    } finally {
+      clearTimeout(timer);
+    }
+    if (!res.ok) return { ok: false, error: res.status === 401 ? "HTTP 401 — key rejected, check the Model API key" : `HTTP ${res.status}` };
+    const data: unknown = await res.json().catch(() => null);
+    const text = extractResponseText(data);
+    if (!text) return { ok: false, error: "empty answer from the model" };
+    return { ok: true, text, model };
   } catch (e) {
     return { ok: false, error: String(e).slice(0, 120) };
   }

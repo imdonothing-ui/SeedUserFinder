@@ -8,7 +8,7 @@ import { eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/bun-sqlite";
 import { complete } from "./inference-stub.ts";
 import { Actions, analyseText, shouldRetryFetch, matchVariant, synonymsFor, sitemapLocs, slugTitleFor, sitemapForumsFor, filterSitemapLocs, sitemapCandidate, channelRecsFor, stackSitesFor, seCandidate, devtoTagsFor, lobstersFor, devtoCandidate, lobstersCandidate, ddgResults, groupVenues, mergeDiscovery, dynamicForumFor, parseExpansionPlan, profileSignature } from "../server/src/actions.ts";
-import { META_MODEL, buildResponsesRequest, extractJsonValue, isDirectKey, completeViaMetaModel } from "../server/src/meta-api.ts";
+import { META_MODEL, buildResponsesRequest, extractJsonValue, extractResponseText, isDirectKey, completeViaMetaModel } from "../server/src/meta-api.ts";
 import { GATE_CORPUS, WILLOW, SECONDHIFT, DEV, MAKEUP, DAWNLITE } from "./gate-corpus.ts";
 import * as schema from "../server/src/schema.ts";
 
@@ -95,6 +95,13 @@ const typedStub = (await call("testLlmConnection", { apiKey: "local-stub-key" })
 check(typedStub.ok === false && typedStub.status === "error", "typed junk key gets the API verdict, never stub-passing", typedStub);
 const bogusDirect = (await call("testLlmConnection", { apiKey: "LLM|bogus|key" })) as any;
 check(bogusDirect.ok === false && typeof bogusDirect.message === "string" && bogusDirect.message.includes("nothing was saved"), "typed bogus direct key fails with the API verdict, never stub-passing", bogusDirect);
+// The connection probe asks for a single word, so it must judge words — the
+// old JSON-only probe failed every valid key with "no usable JSON".
+check(extractResponseText({ output_text: "ok" }) === "ok", "text probe reads output_text", null);
+check(extractResponseText({ output: [{ content: [{ text: "hi" }] }] }) === "hi", "text probe reads output content text", null);
+check(extractResponseText({ choices: [{ message: { content: "yo" } }] }) === "yo", "text probe reads choices content", null);
+check(extractResponseText("plain") === "plain" && extractResponseText({}) === "" && extractResponseText(null) === "", "text probe degrades gracefully", null);
+check(extractJsonValue({ output_text: "ok" }) === null, "plain ok is text, not JSON — the probe must not demand braces", null);
 check(((await state()).llm as any).keyHint === "••••cret", "stored key untouched by typed test", null);
 await call("saveLlmSettings", { apiKey: "k-9999", founderVoice: "plain" });
 
