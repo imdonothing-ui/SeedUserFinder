@@ -137,6 +137,7 @@ function Topbar({ onHome }: { onHome: () => void }) {
       <button type="button" onClick={onHome} className="flex items-center gap-2" aria-label="EarlyProof home">
         <span className="inline-block h-3.5 w-3.5 rounded-full bg-[var(--accent)]" aria-hidden="true" />
         <span className="font-display text-base font-bold tracking-tight">EarlyProof</span>
+        <span className="hidden text-xs text-[var(--dim)] md:inline">Find your first users where they already talk about the pain.</span>
       </button>
       {vQ.data && <span className="ml-auto rounded-full border border-[var(--border)] px-2 py-0.5 text-xs text-[var(--dim)]" title="App version · git commit — so you always know which build you're testing">{vQ.data.label}</span>}
     </header>

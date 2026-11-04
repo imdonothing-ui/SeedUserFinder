@@ -24,8 +24,8 @@ const r = await Bun.build({
 });
 if (!r.success) throw new Error(`client build failed:\n${r.logs.join("\n")}`);
 
-const js = r.outputs.find((o) => o.path.endsWith(".js"))?.path.split("/").pop() ?? "main.js";
-let css = r.outputs.find((o) => o.path.endsWith(".css"))?.path.split("/").pop();
+const js = r.outputs.find((o) => o.path.endsWith(".js"))?.path.split(/[/\\]/).pop() ?? "main.js";
+let css = r.outputs.find((o) => o.path.endsWith(".css"))?.path.split(/[/\\]/).pop();
 // Tailwind v4 utilities need the standalone compiler (no bundler plugin in
 // devDeps): compile theme.css against the client sources.
 const tw = await Bun.$`bunx --package @tailwindcss/cli tailwindcss -i client/src/theme.css -o local/dist/tailwind.css --minify`.quiet();

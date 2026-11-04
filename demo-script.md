@@ -1,24 +1,36 @@
-# EarlyProof demo video — spoken script (< 3 min), Magic Mirror cut
+# EarlyProof demo video — spoken script, Magic Mirror cut (~4 min)
 
 ## Before you press record
-- Rebuild: `cd /Users/guanxs/SeedUserFinder && bun local/build-client.ts` (only needed if App.tsx changed)
+- `cd /Users/guanxs/SeedUserFinder && bun local/build-client.ts` (only needed if App.tsx changed)
 - Start the app: `PORT=3107 bun local/server.ts`, then open http://localhost:3107
-- Make sure your Muse key is saved in Step 0 (AI Setup shows Live). Never show the key on camera.
-- Use the **Magic Mirror** profile: a makeup helper for beginners. It already has a plan, two forums ready to search, and real results.
-- Make the browser about 1280 pixels wide. Commit your code first so the version label looks clean.
+- Muse key saved (AI Setup shows Live). Never show the key on camera.
+- Use the **Magic Mirror** profile (id 144). Do NOT press Search on camera — the results below are already in from the last hunt, and a re-hunt would correctly report 0 new.
+- Browser ~1280px. Commit first so the version label reads clean.
 - Don't open DevTools, the database, or this file while recording.
 
-## 0:00–0:25 — The problem
-Say this: "Building an app is easy now. Anyone can put one together in a weekend. The hard part is finding your first users — the people who already have the problem you're solving. Most founders guess where those people hang out, or ask a chatbot that makes up answers with total confidence and forgets everything the next day. I kept doing that, so I built EarlyProof. It goes looking for people who are already complaining about the problem, checks each one carefully, and keeps track of all of them."
+## 1. What it is (2 sentences)
+Say this: "Building an app is easy now — finding your first users is the hard part. EarlyProof hunts down people who are already complaining about your problem, judges each one with evidence, and tracks them from stranger to user."
 
-## 0:25–0:50 — The profile
-Show the Magic Mirror profile. Say this: "Everything starts here, with three simple things: who your users are, what hurts, and what they do about it today. Plus the words they'd actually type. This one is my own idea — a makeup coach that walks beginners through it step by step. Nothing carries over between profiles. Each one gets its own plan, its own channels, its own hunt."
+## 2. The architecture (30 seconds)
+Say this: "Under the hood it's an agentic pipeline — a team of small AI agents, not one big prompt. A Scout maps where your people talk. Searchers fan out and search every channel at the same time. A Judge reads every candidate and sorts it: seed user, curious, or irrelevant. And every agent has a validator — a strict checker on its output. One retry, then it fails openly instead of saving junk. No key, no data — it says so instead of making things up."
 
-## 0:50–1:20 — Where to look: an agentic pipeline
-Show the channels list: two makeup forums ready to search, Reddit honestly marked closed until it's connected, and two groups you'd join by hand. Say this: "Under the hood this is an agentic pipeline — meaning a team of small AI agents, not one big prompt. A Scout agent maps where these people talk. Searcher agents fan out across the channels. A Judge agent reads every candidate. And every agent has a validator — a strict checker on its output. If an agent returns garbage, it gets one retry, then the run fails openly instead of saving junk. That's why this app never shows you faked results. No key, no data — it says so instead of making things up." Press Search. When the numbers land, point at them. Say this: "Two channels searched, about thirty-nine thousand posts found, thirty new ones kept, six that look like real users. The whole hunt in one glance."
+## 3. Step 0 — AI config
+Show the AI Setup tab: the saved key (hint only), the Live pill, the pinned model. Say this: "Setup is one step, done once. You paste a single key, the pill flips to Live, and every step downstream — plans, hunts, verdicts, drafts — runs on it. Without it the whole flow stays honestly blocked; there is no fake demo mode."
 
-## 1:20–2:05 — The results: semantic matching, not keyword matching
-Scroll through the results. Point at one of the high scores. Say this: "This is semantic matching — the model scores what the post means, not which words it contains. Technically it's a listwise rerank: the model reads the top candidates side by side and grades each against the pain, and that grade gets fused with two word-based signals. In plain terms: someone describing the same struggle in totally different words still ranks high, and a post stuffed with keywords but no real problem sinks. Matching people, not text." Open the one about bridal makeup. Say this: "Every verdict is grounded in a verbatim quote — the person's exact words, copied word for word, or an empty quote with low confidence when the words aren't there. And the ones that don't fit get rejected openly — a makeup video showcase is marked irrelevant, with the reason shown. Six honest rejections are as much the product as six real finds."
+## 4. Step 1 — Profile
+Show the Magic Mirror profile. Read the fields on screen. Say this: "Everything starts from three fields: who your users are, what hurts, and what they do about it today — plus the words they'd type. Mine is Magic Mirror, an AI makeup coach for beginners. Audience: makeup beginners who feel overwhelmed. Pain: tutorials move too fast, can't tell if my blending looks right. Workaround: pausing YouTube every ten seconds. Nothing carries over between profiles — each one gets its own plan, its own channels, its own hunt."
 
-## 2:05–2:40 — Replying, tracking, and the learning loop, then close
-Write a reply for the bridal makeup post. Say this: "Replies are written in my voice and tone-checked. Then everything moves into a tracker — who I contacted, who answered, who needs a nudge — plus a nightly Watcher that pings me when new seed users appear. And there's a learning loop: every time I overrule a verdict, the app replays my corrections against its own rules and tells me where they disagree — so the system drifts toward my judgment over time instead of away from it." To close, say this: "Six steps, from describing your users to following up with them. Go find the people who already want what you're building."
+## 5. Step 2 — Channels
+Show the lineup. Count on screen. Say this: "Muse mapped four places makeup beginners talk. Three are open and searchable right now: MakeupTalk, Lipstick Alley, and Mumsnet's beauty board. One is closed: Reddit's beginner-help community, which needs my login before it opens — the app won't pretend otherwise. Plus one join-by-hand venue, a YouTube tutorial's comments. Note what isn't here: no Hacker News, no GitHub. A dev tool would map those instead — the plan picks per product, nothing is hardcoded."
+
+## 6. Step 3 — Threads
+Show the funnel strip, then the leads. Say this: "The last hunt searched two forums and found about thirty-nine thousand threads. Thirty were new, and the Judge read every one. The funnel shows it in one glance: found, new, and the verdicts." Scroll to the three seed users. Say this: "'Never wore makeup before, help.' 'Makeup help for dummies.' 'Help me get started using makeup.' Real beginners, in their own words, each with a score for what the post means — not which keywords it contains — plus a word-for-word quote as proof." Open a showcase rejection. Say this: "And the tutorials get rejected openly — marked irrelevant, reason shown. Honest rejections are as much the product as the finds."
+
+## 7. Step 4 — Replies
+Pick the bridal-makeup asker and generate a draft. Say this: "I pick a real asker and generate a reply in my voice — tone-checked, and nothing posts itself. I approve the exact text first."
+
+## 8. Step 5 — Tracker
+Show the Tracker with 36 leads sitting at New. Say this: "Every lead lands here. Approve a draft and it moves forward; replies, nudges, and follow-ups live on the lead. This board is empty of progress today because I haven't sent anything yet — that's the honest starting point, not a demo trick."
+
+## 9. Step 6 — Cohort, then close
+Show the empty Cohort. Say this: "Cohort is where tagged invites track whether seed users actually use the thing — signals only, whether it counts as product-market fit is my call. Nothing here yet, because nothing's been sent." To close, say this: "Six steps, from describing your users to following up with them. Go find the people who already want what you're building."

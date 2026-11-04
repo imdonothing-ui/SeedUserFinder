@@ -17,6 +17,7 @@ import { extractOutlinkDomains, forumGraphVenues, parseSeRelatedSites, registrab
 import { collectCorrections, replayCorrections } from "../server/src/eval.ts";
 import { buildSemanticRerankPrompt, fetchSitemapEntries, fetchText, parseSemanticScores, runChannelSearch, sitemapCacheFile, SITEMAP_MAX_BYTES, type SitemapForum } from "../server/src/actions.ts";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { META_MODEL, buildResponsesRequest, extractJsonValue, extractResponseText, isDirectKey, completeViaMetaModel } from "../server/src/meta-api.ts";
 import { GATE_CORPUS, WILLOW, SECONDHIFT, DEV, MAKEUP, DAWNLITE } from "./gate-corpus.ts";
 import * as schema from "../server/src/schema.ts";
@@ -473,7 +474,7 @@ check(skipMsgs.some((m) => m.includes("no-such-channel") && m.includes("0 candid
 // and says it's a saved list. Isolated channel name — never a real forum.
 const probeForum: SitemapForum = { channel: "test-cache-probe", label: "Probe Forum", index: "https://example.com/sitemap.php", maxFiles: 1, sections: [{ token: "sitemap-1" }], communityFor: () => "Probe" };
 const probeEntries = [{ url: "https://example.com/t/ask-help.1/", title: "ask for help", lastmod: "", community: "Probe" }];
-mkdirSync(new URL("../local/data/sitemap-cache/", import.meta.url).pathname, { recursive: true });
+mkdirSync(fileURLToPath(new URL("../local/data/sitemap-cache/", import.meta.url)), { recursive: true });
 writeFileSync(sitemapCacheFile(probeForum), JSON.stringify({ entries: probeEntries }));
 const probeMsgs: string[] = [];
 try {

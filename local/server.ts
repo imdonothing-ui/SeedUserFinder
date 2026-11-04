@@ -3,12 +3,14 @@
 // http://localhost:3107 (override with PORT=). For in-process tests without
 // a port, see local/smoke.ts.
 
+import { fileURLToPath } from "node:url";
 import { boot } from "./harness.ts";
 import { Actions } from "../server/src/actions.ts";
 
 const { ctx } = await boot();
 const PORT = Number(process.env.PORT ?? 3107);
-const dist = new URL("./dist/", import.meta.url).pathname;
+// fileURLToPath, never .pathname: URL pathnames come out as /C:/… on Windows.
+const dist = fileURLToPath(new URL("./dist/", import.meta.url));
 
 function safePath(pathname: string): string | null {
   const clean = decodeURIComponent(pathname.split("?")[0]).replace(/^\/+/, "");

@@ -4,13 +4,17 @@
 
 import { Database } from "bun:sqlite";
 import { drizzle } from "drizzle-orm/bun-sqlite";
+import { mkdirSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { complete } from "./inference-stub.ts";
 import * as schema from "../server/src/schema.ts";
 
-const root = new URL("..", import.meta.url).pathname;
+// fileURLToPath, never .pathname: URL pathnames come out as /C:/… on
+// Windows and break every file operation below.
+const root = fileURLToPath(new URL("..", import.meta.url));
 
 export async function boot() {
-  await Bun.$`mkdir -p ${root}/local/data`.quiet();
+  mkdirSync(`${root}/local/data`, { recursive: true });
   const sqlite = new Database(`${root}/local/data/app.db`);
   sqlite.exec("CREATE TABLE IF NOT EXISTS local_migrations (tag TEXT PRIMARY KEY)");
   const applied = new Set(

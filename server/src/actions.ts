@@ -1,6 +1,7 @@
 import { defineAction, z, type ActionsModule, type Ctx } from "@hatch/space-sdk";
 import { desc, eq, and, or, like, inArray, gte } from "drizzle-orm";
 import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import type { BunSQLiteDatabase } from "drizzle-orm/bun-sqlite";
 import { META_MODEL, completeViaMetaModel, completeViaMetaModelText, isDirectKey } from "./meta-api";
 import { bm25Order, fuseRanks } from "./retrieval";
@@ -1441,7 +1442,7 @@ export const SITEMAP_MAX_BYTES = 25_000_000;
 // says when a saved list is used, so a day-old list is visible, never silent.
 export function sitemapCacheFile(forum: SitemapForum): string {
   const slug = `${forum.channel}-${forum.sections.map((s) => s.token).sort().join("|")}`.replace(/[^a-z0-9]+/gi, "_").slice(0, 120);
-  return new URL(`../../local/data/sitemap-cache/${slug}.json`, import.meta.url).pathname;
+  return fileURLToPath(new URL(`../../local/data/sitemap-cache/${slug}.json`, import.meta.url));
 }
 export async function fetchSitemapEntries(forum: SitemapForum, onProgress?: (detail: string) => Promise<void>): Promise<{ entries: SitemapEntry[] } | { error: string }> {
   const say = async (detail: string) => { if (onProgress) { try { await onProgress(detail); } catch { /* progress never breaks the hunt */ } } };
@@ -1501,7 +1502,7 @@ export async function fetchSitemapEntries(forum: SitemapForum, onProgress?: (det
   if (!entries.length) return { error: "Sitemap files yielded no thread titles." };
   sitemapCache.set(cacheKey, { at: Date.now(), entries });
   try {
-    mkdirSync(new URL("../../local/data/sitemap-cache/", import.meta.url).pathname, { recursive: true });
+    mkdirSync(fileURLToPath(new URL("../../local/data/sitemap-cache/", import.meta.url)), { recursive: true });
     writeFileSync(sitemapCacheFile(forum), JSON.stringify({ entries }));
   } catch { /* disk cache is a speedup, never a requirement */ }
   return { entries };
