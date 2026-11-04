@@ -15,7 +15,8 @@ import { Actions, analyseText, shouldRetryFetch, matchVariant, normText, synonym
 import { bm25Order, fuseRanks } from "../server/src/retrieval.ts";
 import { extractOutlinkDomains, forumGraphVenues, parseSeRelatedSites, registrable, seGraphVenues } from "../server/src/venue-graph.ts";
 import { collectCorrections, replayCorrections } from "../server/src/eval.ts";
-import { buildSemanticRerankPrompt, fetchText, parseSemanticScores, runChannelSearch, SITEMAP_MAX_BYTES } from "../server/src/actions.ts";
+import { buildSemanticRerankPrompt, fetchSitemapEntries, fetchText, parseSemanticScores, runChannelSearch, sitemapCacheFile, SITEMAP_MAX_BYTES, type SitemapForum } from "../server/src/actions.ts";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { META_MODEL, buildResponsesRequest, extractJsonValue, extractResponseText, isDirectKey, completeViaMetaModel } from "../server/src/meta-api.ts";
 import { GATE_CORPUS, WILLOW, SECONDHIFT, DEV, MAKEUP, DAWNLITE } from "./gate-corpus.ts";
 import * as schema from "../server/src/schema.ts";
@@ -464,8 +465,24 @@ check(genR.semanticApplied === false, "generic hunt never claims a rerank", null
 // The fusion skip branch itself, reached with zero candidates and no
 // network: an unknown channel errors, nothing ranks, the run says so.
 const evProfRow = (await db.select().from(schema.profiles).where(eq(schema.profiles.id, evProf.id)))[0]!;
-const skipRun = await runChannelSearch(ctx as never, evProfRow, ["no-such-channel"], "", ["laid off with bills due"]);
+const skipMsgs: string[] = [];
+const skipRun = await runChannelSearch(ctx as never, evProfRow, ["no-such-channel"], "", ["laid off with bills due"], async (d) => { skipMsgs.push(d); });
 check(skipRun.found === 0 && skipRun.semanticApplied === false && skipRun.semanticMessage.includes("fewer than 2"), "zero-candidate run skips rerank with an honest message", skipRun.semanticMessage);
+check(skipMsgs.some((m) => m.includes("no-such-channel") && m.includes("0 candidates")), "each channel reports in as it finishes, even at zero", skipMsgs);
+// Disk cache: a fresh probe-forum cache returns without touching network
+// and says it's a saved list. Isolated channel name — never a real forum.
+const probeForum: SitemapForum = { channel: "test-cache-probe", label: "Probe Forum", index: "https://example.com/sitemap.php", maxFiles: 1, sections: [{ token: "sitemap-1" }], communityFor: () => "Probe" };
+const probeEntries = [{ url: "https://example.com/t/ask-help.1/", title: "ask for help", lastmod: "", community: "Probe" }];
+mkdirSync(new URL("../local/data/sitemap-cache/", import.meta.url).pathname, { recursive: true });
+writeFileSync(sitemapCacheFile(probeForum), JSON.stringify({ entries: probeEntries }));
+const probeMsgs: string[] = [];
+try {
+  const probe = await fetchSitemapEntries(probeForum, async (d) => { probeMsgs.push(d); });
+  check(!("error" in probe) && probe.entries.length === 1 && probe.entries[0]!.title === "ask for help", "fresh disk cache serves the thread list with no fetch", probe);
+  check(probeMsgs.some((m) => m.includes("saved") && m.includes("Probe Forum")), "cached list names itself as saved, never silent", probeMsgs);
+} finally {
+  rmSync(sitemapCacheFile(probeForum), { force: true });
+}
 // Funnel fields: every hunt carries per-channel rows (zero rows included)
 // plus this hunt's verdict counts.
 check(skipRun.channelStats.length === 1 && skipRun.channelStats[0].channel === "no-such-channel" && skipRun.channelStats[0].found === 0, "funnel lists the searched channel even at zero", skipRun.channelStats);

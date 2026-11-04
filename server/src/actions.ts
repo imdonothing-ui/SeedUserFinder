@@ -1,5 +1,6 @@
 import { defineAction, z, type ActionsModule, type Ctx } from "@hatch/space-sdk";
 import { desc, eq, and, or, like, inArray, gte } from "drizzle-orm";
+import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import type { BunSQLiteDatabase } from "drizzle-orm/bun-sqlite";
 import { META_MODEL, completeViaMetaModel, completeViaMetaModelText, isDirectKey } from "./meta-api";
 import { bm25Order, fuseRanks } from "./retrieval";
@@ -1435,7 +1436,25 @@ const SITEMAP_MAX_ENTRIES = 60000;
 // threads — so sitemap reads get their own budget. Entries are still capped
 // downstream by SITEMAP_MAX_ENTRIES; this only lets the XML arrive whole.
 export const SITEMAP_MAX_BYTES = 25_000_000;
-async function fetchSitemapEntries(forum: SitemapForum): Promise<{ entries: SitemapEntry[] } | { error: string }> {
+// Disk cache for parsed thread lists (24h): repeat hunts skip multi-MB
+// downloads entirely. The file names the forum and slice; the progress line
+// says when a saved list is used, so a day-old list is visible, never silent.
+export function sitemapCacheFile(forum: SitemapForum): string {
+  const slug = `${forum.channel}-${forum.sections.map((s) => s.token).sort().join("|")}`.replace(/[^a-z0-9]+/gi, "_").slice(0, 120);
+  return new URL(`../../local/data/sitemap-cache/${slug}.json`, import.meta.url).pathname;
+}
+export async function fetchSitemapEntries(forum: SitemapForum, onProgress?: (detail: string) => Promise<void>): Promise<{ entries: SitemapEntry[] } | { error: string }> {
+  const say = async (detail: string) => { if (onProgress) { try { await onProgress(detail); } catch { /* progress never breaks the hunt */ } } };
+  try {
+    const st = statSync(sitemapCacheFile(forum));
+    if (Date.now() - st.mtimeMs < SITEMAP_TTL_MS) {
+      const cached = JSON.parse(readFileSync(sitemapCacheFile(forum), "utf8")) as { entries?: SitemapEntry[] };
+      if (Array.isArray(cached.entries) && cached.entries.length) {
+        await say(`Using a saved ${forum.label} thread list (${cached.entries.length.toLocaleString("en-US")} threads, less than a day old) — download skipped`);
+        return { entries: cached.entries };
+      }
+    }
+  } catch { /* no usable cache — fetch live */ }
   const idx0 = await fetchText(forum.index, {}, SITEMAP_MAX_BYTES);
   if (!idx0.ok) return { error: `Sitemap index unreachable (HTTP ${idx0.status}).` };
   let level0 = filterSitemapLocs(forum, sitemapLocs(idx0.text, "sitemap").map((e) => e.loc));
@@ -1461,6 +1480,7 @@ async function fetchSitemapEntries(forum: SitemapForum): Promise<{ entries: Site
       if (fetches >= forum.maxFiles || entries.length >= SITEMAP_MAX_ENTRIES) break;
       if (seen.has(loc)) continue;
       seen.add(loc);
+      await say(`Reading ${forum.label} thread list (file ${fetches + 1} of ${Math.min(level.length, forum.maxFiles)})…`);
       const r = await fetchText(loc, {}, SITEMAP_MAX_BYTES);
       fetches++;
       if (!r.ok) continue; // one bad file doesn't sink the channel
@@ -1480,6 +1500,10 @@ async function fetchSitemapEntries(forum: SitemapForum): Promise<{ entries: Site
   }
   if (!entries.length) return { error: "Sitemap files yielded no thread titles." };
   sitemapCache.set(cacheKey, { at: Date.now(), entries });
+  try {
+    mkdirSync(new URL("../../local/data/sitemap-cache/", import.meta.url).pathname, { recursive: true });
+    writeFileSync(sitemapCacheFile(forum), JSON.stringify({ entries }));
+  } catch { /* disk cache is a speedup, never a requirement */ }
   return { entries };
 }
 // A web-discovered venue as a searchable forum object: exact file tokens
@@ -1760,7 +1784,7 @@ async function ensureReddit(ctx: Ctx): Promise<{ access: string; handle: string 
 // discarded can never exceed found the way the old per-occurrence count did.
 
 type SearcherResult = { cands: { key: string; values: typeof schema.leads.$inferInsert; s: Relevance }[]; errors: { channel: string; message: string }[] };
-type SearcherInput = { ctx: Ctx; profile: typeof schema.profiles.$inferSelect; queries: string[]; subreddits: string; seSites: string[]; execPlan: ExpansionPlan | null; budget: { take: (n?: number) => boolean } };
+type SearcherInput = { ctx: Ctx; profile: typeof schema.profiles.$inferSelect; queries: string[]; subreddits: string; seSites: string[]; execPlan: ExpansionPlan | null; budget: { take: (n?: number) => boolean }; onProgress?: (detail: string) => Promise<void> };
 type ForumSearcherInput = SearcherInput & { ch: string };
 // Shared per-run API budget: today's per-channel caps never bind it (worst
 // case ~29 calls), so current behavior is unchanged — it only stops a
@@ -1825,7 +1849,7 @@ async function searchChannelForums(input: ForumSearcherInput): Promise<SearcherR
         forums = [adapter];
       }
       for (const forum of forums) {
-        const r = await fetchSitemapEntries(forum);
+        const r = await fetchSitemapEntries(forum, input.onProgress);
         if ("error" in r) { errors.push({ channel: forum.label, message: r.error }); continue; }
         for (const e of r.entries) {
           const c = sitemapCandidate(e, forum, profile, profile.id);
@@ -2017,6 +2041,7 @@ export async function runChannelSearch(
   channels: string[],
   subreddits: string,
   queries: string[],
+  onProgress?: (detail: string) => Promise<void>,
 ): Promise<{ created: number; found: number; discarded: number; pruned: number; promoted: number; errors: { channel: string; message: string }[]; semanticApplied: boolean; semanticMessage: string; channelStats: ChannelStat[] }> {
   const db = ctx.db<typeof schema>();
   let pruned = 0;
@@ -2070,8 +2095,8 @@ export async function runChannelSearch(
   // internally exactly as before. A worker never throws past its own error
   // entry: one channel failing degrades to that channel, never the run.
   const searchBudget = makeCallBudget(SEARCH_BUDGET_CALLS);
-  const searcherBase = { ctx, profile, queries, subreddits, seSites, execPlan, budget: searchBudget };
-  const settled = await Promise.all(channels.map(async (ch): Promise<SearcherResult> => {
+  const searcherBase = { ctx, profile, queries, subreddits, seSites, execPlan, budget: searchBudget, onProgress };
+  const runOne = async (ch: string): Promise<SearcherResult> => {
     try {
       if (ch === "stackexchange") return await searchChannelStackExchange(searcherBase);
       if (ch === "hackernews") return await searchChannelHackerNews(searcherBase);
@@ -2085,7 +2110,15 @@ export async function runChannelSearch(
     } catch (e) {
       return { cands: [], errors: [{ channel: ch, message: "Search crashed (" + String(e).slice(0, 120) + ") — other channels unaffected." }] };
     }
-  }));
+  };
+  // Each channel reports in as it finishes, so the run line narrates the
+  // hunt while slow legs (multi-MB sitemaps) are still downloading.
+  const settled = await Promise.all(channels.map((ch) => runOne(ch).then(async (r) => {
+    if (onProgress) {
+      try { await onProgress(`${ch} searched — ${r.cands.length} candidate${r.cands.length === 1 ? "" : "s"}${r.errors.length ? " (with a note)" : ""}`); } catch { /* progress never breaks the hunt */ }
+    }
+    return r;
+  })));
   for (const r of settled) {
     for (const c of r.cands) addCandidate(c.key, c.values, c.s);
     for (const e of r.errors) errors.push(e);
@@ -2120,6 +2153,7 @@ export async function runChannelSearch(
   let ordered = rankBy(fused);
   const rerankInput = ordered.slice(0, SEMANTIC_RERANK_CAP);
   if (rerankInput.length >= 2) {
+    if (onProgress) { try { await onProgress(`Muse is grading ${rerankInput.length} candidates by meaning…`); } catch { /* progress never breaks the hunt */ } }
     const keys = new Set(rerankInput.map((c) => c.key));
     const r = await runLlm(ctx, "small", buildSemanticRerankPrompt(profile.pain, profile.audience,
       rerankInput.map((c) => ({ key: c.key, title: c.values.title ?? "", body: c.values.body ?? "" }))), semanticRerankSchema);
@@ -2416,6 +2450,7 @@ export const Actions = {
       // Orchestrated end to end on one run: Scout maps (or reuses), Searchers
       // fan out across the selected channels, Judge synthesizes.
       const runId = await startSearchRun(db, profile.id, "search");
+      await touchSearchRun(db, runId, "expanding", "Muse is mapping where they talk…");
       const exp = await ensureExpansionPlan(ctx, profile, runId);
       if (!exp.ok) {
         await touchSearchRun(db, runId, "done", exp.message);
@@ -2435,7 +2470,9 @@ export const Actions = {
       }
       await touchSearchRun(db, runId, "searching", `Searching ${args.channels.length} channel(s)…`);
       const huntStart = Date.now();
-      const run = await runChannelSearch(ctx, profile, args.channels, args.subreddits, usable);
+      const run = await runChannelSearch(ctx, profile, args.channels, args.subreddits, usable, async (d) => {
+        try { await touchSearchRun(db, runId, "searching", d); } catch { /* progress never breaks the hunt */ }
+      });
       // Step 4 — LLM synthesis runs automatically before any result is shown.
       await touchSearchRun(db, runId, "synthesizing", `Synthesizing ${run.created} candidate(s) with Muse…`, { found: run.found, created: run.created });
       const synth = await classifyForProfile(ctx, profile, runId);
@@ -2468,6 +2505,7 @@ export const Actions = {
       // Orchestrated end to end on one run: Scout maps, Searchers fan out,
       // Judge synthesizes — each step traced through the same run id.
       const runId = await startSearchRun(db, profile.id, "expand");
+      await touchSearchRun(db, runId, "expanding", "Muse is mapping where else they talk…");
       const gen = await scoutPlanAgent.execute(ctx, { profile, context: {
         reason: synthesizedNow === 0
           ? "The last search returned 0 synthesized results — a dead end the founder asked to expand past."
@@ -2481,7 +2519,9 @@ export const Actions = {
       const queries = gen.value.plan.queries.map((q) => q.query).slice(0, 6);
       await touchSearchRun(db, runId, "searching", `Searching ${args.channels.length} channel(s) with round ${gen.value.round} queries…`);
       const huntStart = Date.now();
-      const run = await runChannelSearch(ctx, profile, args.channels, args.subreddits, queries);
+      const run = await runChannelSearch(ctx, profile, args.channels, args.subreddits, queries, async (d) => {
+        try { await touchSearchRun(db, runId, "searching", d); } catch { /* progress never breaks the hunt */ }
+      });
       await touchSearchRun(db, runId, "synthesizing", `Synthesizing ${run.created} candidate(s) with Muse…`, { found: run.found, created: run.created });
       const synth = await classifyForProfile(ctx, profile, runId);
       const errors = [...run.errors];

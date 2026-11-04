@@ -1,29 +1,24 @@
 # EarlyProof demo video — spoken script (< 3 min), Magic Mirror cut
 
-## Prep (before pressing record)
-- `cd /Users/guanxs/SeedUserFinder && bun local/build-client.ts` (rebuild if App.tsx changed)
-- `PORT=3107 bun local/server.ts` → open http://localhost:3107
-- Muse API key saved in Step 0 → AI Setup (pill shows Live). Never type or paste the key on camera (only a •••• hint).
-- Use profile **Magic Mirror (144)**: makeup AI coach for beginners. Round-2 plan (anchor "makeup"), 2 open forums + closed Reddit + 2 venues, 36 leads, 6 curious askers with quotes.
-- Browser ~1280px. Commit first so the version pill reads clean, no "dirty".
-- Do NOT open DevTools, the DB, or this file on camera.
+## Before you press record
+- Rebuild: `cd /Users/guanxs/SeedUserFinder && bun local/build-client.ts` (only needed if App.tsx changed)
+- Start the app: `PORT=3107 bun local/server.ts`, then open http://localhost:3107
+- Make sure your Muse key is saved in Step 0 (AI Setup shows Live). Never show the key on camera.
+- Use the **Magic Mirror** profile: a makeup helper for beginners. It already has a plan, two forums ready to search, and real results.
+- Make the browser about 1280 pixels wide. Commit your code first so the version label looks clean.
+- Don't open DevTools, the database, or this file while recording.
 
-## 0:00–0:25 — Problem + why I built it
-Say: "AI made building cheap — anyone can ship an app in a weekend. So the bottleneck moved: it's no longer building, it's finding your first users. Founders guess where their people talk, or ask a chatbot that hallucinates channels with total confidence and remembers nothing. I built EarlyProof because I kept doing exactly that — so it hunts where people already complain about the problem, judges every candidate with evidence, and tracks the whole path from stranger to user."
+## 0:00–0:25 — The problem
+Say this: "Building an app is easy now. Anyone can put one together in a weekend. The hard part is finding your first users — the people who already have the problem you're solving. Most founders guess where those people hang out, or ask a chatbot that makes up answers with total confidence and forgets everything the next day. I kept doing that, so I built EarlyProof. It goes looking for people who are already complaining about the problem, checks each one carefully, and keeps track of all of them."
 
-## 0:25–0:50 — Profile (Step 1)
-Show the Magic Mirror profile: audience "makeup beginners who feel overwhelmed", pain "tutorials move too fast, can't tell if my blending looks right", workaround "pausing YouTube every ten seconds". Say: "Three fields — audience, pain, workaround, plus the words they'd type. Everything downstream derives from this; nothing is reused across profiles. This one is my own product idea — an AI makeup coach that walks novices step by step."
+## 0:25–0:50 — The profile
+Show the Magic Mirror profile. Say this: "Everything starts here, with three simple things: who your users are, what hurts, and what they do about it today. Plus the words they'd actually type. This one is my own idea — a makeup coach that walks beginners through it step by step. Nothing carries over between profiles. Each one gets its own plan, its own channels, its own hunt."
 
-## 0:50–1:20 — Channels (Step 2) + the funnel
-Show the lineup: **MakeupTalk and Lipstick Alley open**, **Reddit closed until connected**, plus YouTube-comments and Facebook-group venues. Say: "Muse mapped where makeup beginners actually talk — two forums it can search right now, Reddit honestly closed until I connect it, and two join-by-hand venues. No hardcoded channel list: a dev-tool profile maps to Hacker News and GitHub instead." Press Search; point at the funnel strip as it lands: "Two channels searched, thirty-nine thousand threads found, thirty new — and six the model calls curious. That's the whole hunt in one glance."
+## 0:50–1:20 — Where to look: an agentic pipeline
+Show the channels list: two makeup forums ready to search, Reddit honestly marked closed until it's connected, and two groups you'd join by hand. Say this: "Under the hood this is an agentic pipeline — meaning a team of small AI agents, not one big prompt. A Scout agent maps where these people talk. Searcher agents fan out across the channels. A Judge agent reads every candidate. And every agent has a validator — a strict checker on its output. If an agent returns garbage, it gets one retry, then the run fails openly instead of saving junk. That's why this app never shows you faked results. No key, no data — it says so instead of making things up." Press Search. When the numbers land, point at them. Say this: "Two channels searched, about thirty-nine thousand posts found, thirty new ones kept, six that look like real users. The whole hunt in one glance."
 
-## 1:20–2:05 — Threads (Step 3) + semantic matching
-Scroll the results. Point at a semantic pill: "This 72 doesn't mean keyword overlap — it means the model judged this person's situation matches the pain. A paraphrase with zero shared words outranks a keyword-stuffed giveaway. That's matching people, not text." Open "makeup virgin needs help with bridal makeup": "Every verdict shows its confidence, its evidence, and a word-for-word quote. And the showcases — 'barbie inspired makeup look video tutorial' — get rejected as irrelevant with the evidence quoted, not hidden. Six rejections with reasons are as much the product as six finds."
+## 1:20–2:05 — The results: semantic matching, not keyword matching
+Scroll through the results. Point at one of the high scores. Say this: "This is semantic matching — the model scores what the post means, not which words it contains. Technically it's a listwise rerank: the model reads the top candidates side by side and grades each against the pain, and that grade gets fused with two word-based signals. In plain terms: someone describing the same struggle in totally different words still ranks high, and a post stuffed with keywords but no real problem sinks. Matching people, not text." Open the one about bridal makeup. Say this: "Every verdict is grounded in a verbatim quote — the person's exact words, copied word for word, or an empty quote with low confidence when the words aren't there. And the ones that don't fit get rejected openly — a makeup video showcase is marked irrelevant, with the reason shown. Six honest rejections are as much the product as six real finds."
 
-## 2:05–2:40 — Replies → Tracker → Cohort (Steps 4–6) + close
-Generate a draft for the bridal-makeup asker. Say: "Drafts are written in my voice, tone-checked, and outreach moves through Tracker into Cohort — replies, nudges, and a nightly Watcher that pings me when new seed users appear. And every time I overrule a verdict, the learning loop replays my corrections against the gate, so the system drifts toward my judgment." Close: "Profile to Cohort in six steps. Find people who already want what you're building — EarlyProof."
-
-## Retake notes
-- Search takes ~30–60s on the big forum pool; don't cut mid-run — the phase line ("Searching… / Synthesizing N") is part of the story.
-- If Lipstick Alley 403s on camera, that's the funnel being honest: "0 found" row plus the channel note. Keep it in — or cut that hunt and show the MakeupTalk row only.
-- Never type or paste the API key on camera.
+## 2:05–2:40 — Replying, tracking, and the learning loop, then close
+Write a reply for the bridal makeup post. Say this: "Replies are written in my voice and tone-checked. Then everything moves into a tracker — who I contacted, who answered, who needs a nudge — plus a nightly Watcher that pings me when new seed users appear. And there's a learning loop: every time I overrule a verdict, the app replays my corrections against its own rules and tells me where they disagree — so the system drifts toward my judgment over time instead of away from it." To close, say this: "Six steps, from describing your users to following up with them. Go find the people who already want what you're building."
