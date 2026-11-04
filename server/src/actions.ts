@@ -1,5 +1,5 @@
 import { defineAction, z, type ActionsModule, type Ctx } from "@hatch/space-sdk";
-import { desc, eq, and, or, like, inArray } from "drizzle-orm";
+import { desc, eq, and, or, like, inArray, gte } from "drizzle-orm";
 import type { BunSQLiteDatabase } from "drizzle-orm/bun-sqlite";
 import { META_MODEL, completeViaMetaModel, completeViaMetaModelText, isDirectKey } from "./meta-api";
 import { bm25Order, fuseRanks } from "./retrieval";
@@ -1430,8 +1430,13 @@ export type SitemapEntry = { url: string; title: string; lastmod: string; commun
 const sitemapCache = new Map<string, { at: number; entries: SitemapEntry[] }>();
 const SITEMAP_TTL_MS = 24 * 3600 * 1000;
 const SITEMAP_MAX_ENTRIES = 60000;
+// Sitemap XML runs big (MakeupTalk's oldest slice is 9MB+): the global 8MB
+// fetch cap would silently drop whole files — and with them half a forum's
+// threads — so sitemap reads get their own budget. Entries are still capped
+// downstream by SITEMAP_MAX_ENTRIES; this only lets the XML arrive whole.
+export const SITEMAP_MAX_BYTES = 25_000_000;
 async function fetchSitemapEntries(forum: SitemapForum): Promise<{ entries: SitemapEntry[] } | { error: string }> {
-  const idx0 = await fetchText(forum.index);
+  const idx0 = await fetchText(forum.index, {}, SITEMAP_MAX_BYTES);
   if (!idx0.ok) return { error: `Sitemap index unreachable (HTTP ${idx0.status}).` };
   let level0 = filterSitemapLocs(forum, sitemapLocs(idx0.text, "sitemap").map((e) => e.loc));
   // Flat sitemap (no index — the file itself lists threads, as discovered
@@ -1456,7 +1461,7 @@ async function fetchSitemapEntries(forum: SitemapForum): Promise<{ entries: Site
       if (fetches >= forum.maxFiles || entries.length >= SITEMAP_MAX_ENTRIES) break;
       if (seen.has(loc)) continue;
       seen.add(loc);
-      const r = await fetchText(loc);
+      const r = await fetchText(loc, {}, SITEMAP_MAX_BYTES);
       fetches++;
       if (!r.ok) continue; // one bad file doesn't sink the channel
       if (r.text.includes("<sitemapindex")) {
@@ -1987,13 +1992,32 @@ async function searchChannelReddit(input: SearcherInput): Promise<SearcherResult
       }
   return { cands, errors };
 }
+// Per-channel funnel rows and per-hunt verdict counts ride on the search
+// result so the Threads step can show the funnel honestly.
+export interface ChannelStat { channel: string; found: number; kept: number; created: number }
+export interface HuntVerdicts { seedUser: number; curious: number; irrelevant: number; pending: number }
+// Verdicts on exactly this hunt's new leads (created at/after the hunt
+// started): what the funnel's last stage shows. Older leads belong to older
+// hunts, never this count.
+async function verdictsForHunt(db: Db, profileId: number, sinceMs: number): Promise<HuntVerdicts> {
+  const rows = await db.select({ category: schema.leads.llmCategory }).from(schema.leads)
+    .where(and(eq(schema.leads.profileId, profileId), gte(schema.leads.createdAt, new Date(sinceMs))));
+  const v: HuntVerdicts = { seedUser: 0, curious: 0, irrelevant: 0, pending: 0 };
+  for (const r of rows) {
+    if (r.category === "seed_user") v.seedUser++;
+    else if (r.category === "curious") v.curious++;
+    else if (r.category === "irrelevant") v.irrelevant++;
+    else v.pending++;
+  }
+  return v;
+}
 export async function runChannelSearch(
   ctx: Ctx,
   profile: typeof schema.profiles.$inferSelect,
   channels: string[],
   subreddits: string,
   queries: string[],
-): Promise<{ created: number; found: number; discarded: number; pruned: number; promoted: number; errors: { channel: string; message: string }[]; semanticApplied: boolean; semanticMessage: string }> {
+): Promise<{ created: number; found: number; discarded: number; pruned: number; promoted: number; errors: { channel: string; message: string }[]; semanticApplied: boolean; semanticMessage: string; channelStats: ChannelStat[] }> {
   const db = ctx.db<typeof schema>();
   let pruned = 0;
   const existingAll = await db.select().from(schema.leads).where(eq(schema.leads.profileId, profile.id));
@@ -2123,6 +2147,7 @@ export async function runChannelSearch(
   }
   const selectedKeys = new Set(selected.map((c) => c.key));
   let created = 0;
+  const createdBy = new Map<string, number>();
   for (const cand of selected) {
     const url = cand.values.externalUrl ?? "";
     const extId = cand.values.externalId ?? "";
@@ -2138,13 +2163,34 @@ export async function runChannelSearch(
     if (url) seen.add(url);
     if (extId) seen.add(extId);
     created++;
+    const cc = cand.values.channel ?? "";
+    createdBy.set(cc, (createdBy.get(cc) ?? 0) + 1);
   }
   const discarded = sorted.filter((c) => !selectedKeys.has(c.key)).length;
-  return { created, found, discarded, pruned, promoted, errors, semanticApplied, semanticMessage };
+  // Per-channel funnel rows: every requested channel appears even at zero —
+  // a searched channel with nothing found is information, not an omission.
+  const statRows = new Map<string, ChannelStat>();
+  const statFor = (ch: string) => {
+    let row = statRows.get(ch);
+    if (!row) { row = { channel: ch, found: 0, kept: 0, created: 0 }; statRows.set(ch, row); }
+    return row;
+  };
+  for (const ch of channels) statFor(ch);
+  for (const c of sorted) {
+    const row = statFor(c.values.channel ?? "");
+    row.found++;
+    if (c.keep) row.kept++;
+  }
+  for (const [ch, n] of createdBy) statFor(ch).created = n;
+  const channelStats = [...statRows.values()];
+  return { created, found, discarded, pruned, promoted, errors, semanticApplied, semanticMessage, channelStats };
 }
 
-const searchResponse = z.object({ runId: z.number(), created: z.number(), found: z.number(), discarded: z.number(), pruned: z.number(), promoted: z.number(), synthesized: z.number(), synthesisStatus: z.string(), synthesisMessage: z.string(), errors: z.array(z.object({ channel: z.string(), message: z.string() })), expansionRound: z.number(), expansionAnchor: z.string(), expansionQueries: z.array(z.string()), expansionGenerated: z.boolean(), nextSuggestions: z.array(z.string()), semanticApplied: z.boolean(), semanticMessage: z.string() });
-const emptySearch = { runId: 0, created: 0, found: 0, discarded: 0, pruned: 0, promoted: 0, synthesized: 0, expansionRound: 0, expansionAnchor: "", expansionQueries: [] as string[], expansionGenerated: false, nextSuggestions: [] as string[], semanticApplied: false, semanticMessage: "" };
+const channelStatOut = z.object({ channel: z.string(), found: z.number(), kept: z.number(), created: z.number() });
+const verdictsOut = z.object({ seedUser: z.number(), curious: z.number(), irrelevant: z.number(), pending: z.number() });
+const emptyVerdicts: HuntVerdicts = { seedUser: 0, curious: 0, irrelevant: 0, pending: 0 };
+const searchResponse = z.object({ runId: z.number(), created: z.number(), found: z.number(), discarded: z.number(), pruned: z.number(), promoted: z.number(), synthesized: z.number(), synthesisStatus: z.string(), synthesisMessage: z.string(), errors: z.array(z.object({ channel: z.string(), message: z.string() })), expansionRound: z.number(), expansionAnchor: z.string(), expansionQueries: z.array(z.string()), expansionGenerated: z.boolean(), nextSuggestions: z.array(z.string()), semanticApplied: z.boolean(), semanticMessage: z.string(), channelsSearched: z.array(z.string()), channelStats: z.array(channelStatOut), verdicts: verdictsOut });
+const emptySearch = { runId: 0, created: 0, found: 0, discarded: 0, pruned: 0, promoted: 0, synthesized: 0, expansionRound: 0, expansionAnchor: "", expansionQueries: [] as string[], expansionGenerated: false, nextSuggestions: [] as string[], semanticApplied: false, semanticMessage: "", channelsSearched: [] as string[], channelStats: [] as ChannelStat[], verdicts: { ...emptyVerdicts } };
 
 const leadOut = z.object({
   id: z.number(), profileId: z.number(), channel: z.string(), mode: z.string(), externalUrl: z.string(),
@@ -2388,15 +2434,17 @@ export const Actions = {
         return { ...emptySearch, runId, synthesisStatus: "error", synthesisMessage: "No anchored query to search — nothing was searched.", errors: [{ channel: "setup", message: "No anchored query to search — nothing was searched." }] };
       }
       await touchSearchRun(db, runId, "searching", `Searching ${args.channels.length} channel(s)…`);
+      const huntStart = Date.now();
       const run = await runChannelSearch(ctx, profile, args.channels, args.subreddits, usable);
       // Step 4 — LLM synthesis runs automatically before any result is shown.
       await touchSearchRun(db, runId, "synthesizing", `Synthesizing ${run.created} candidate(s) with Muse…`, { found: run.found, created: run.created });
       const synth = await classifyForProfile(ctx, profile, runId);
       const errors = [...run.errors];
       if (synth.status !== "ok") errors.push({ channel: "Muse synthesis", message: synth.message });
+      const verdicts = await verdictsForHunt(db, profile.id, huntStart);
       await touchSearchRun(db, runId, "done", `Checked ${run.found} posts, ${run.created} looked like your people.`, { found: run.found, created: run.created, synthesized: synth.classified + synth.cached });
       ctx.invalidateQueries();
-      return { runId, created: run.created, found: run.found, discarded: run.discarded, pruned: run.pruned, promoted: run.promoted, synthesized: synth.classified + synth.cached, synthesisStatus: synth.status, synthesisMessage: synth.message, errors, expansionRound: exp.round, expansionAnchor: exp.plan.anchorTerm, expansionQueries: usable, expansionGenerated: exp.generated, nextSuggestions: exp.plan.nextSuggestions, semanticApplied: run.semanticApplied, semanticMessage: run.semanticMessage };
+      return { runId, created: run.created, found: run.found, discarded: run.discarded, pruned: run.pruned, promoted: run.promoted, synthesized: synth.classified + synth.cached, synthesisStatus: synth.status, synthesisMessage: synth.message, errors, expansionRound: exp.round, expansionAnchor: exp.plan.anchorTerm, expansionQueries: usable, expansionGenerated: exp.generated, nextSuggestions: exp.plan.nextSuggestions, semanticApplied: run.semanticApplied, semanticMessage: run.semanticMessage, channelsSearched: args.channels, channelStats: run.channelStats, verdicts };
     },
   }),
 
@@ -2432,14 +2480,16 @@ export const Actions = {
       }
       const queries = gen.value.plan.queries.map((q) => q.query).slice(0, 6);
       await touchSearchRun(db, runId, "searching", `Searching ${args.channels.length} channel(s) with round ${gen.value.round} queries…`);
+      const huntStart = Date.now();
       const run = await runChannelSearch(ctx, profile, args.channels, args.subreddits, queries);
       await touchSearchRun(db, runId, "synthesizing", `Synthesizing ${run.created} candidate(s) with Muse…`, { found: run.found, created: run.created });
       const synth = await classifyForProfile(ctx, profile, runId);
       const errors = [...run.errors];
       if (synth.status !== "ok") errors.push({ channel: "Muse synthesis", message: synth.message });
+      const verdicts = await verdictsForHunt(db, profile.id, huntStart);
       await touchSearchRun(db, runId, "done", `Checked ${run.found} posts, ${run.created} looked like your people.`, { found: run.found, created: run.created, synthesized: synth.classified + synth.cached });
       ctx.invalidateQueries();
-      return { runId, created: run.created, found: run.found, discarded: run.discarded, pruned: run.pruned, promoted: run.promoted, synthesized: synth.classified + synth.cached, synthesisStatus: synth.status, synthesisMessage: synth.message, errors, expansionRound: gen.value.round, expansionAnchor: gen.value.plan.anchorTerm, expansionQueries: queries, expansionGenerated: true, nextSuggestions: gen.value.plan.nextSuggestions, semanticApplied: run.semanticApplied, semanticMessage: run.semanticMessage };
+      return { runId, created: run.created, found: run.found, discarded: run.discarded, pruned: run.pruned, promoted: run.promoted, synthesized: synth.classified + synth.cached, synthesisStatus: synth.status, synthesisMessage: synth.message, errors, expansionRound: gen.value.round, expansionAnchor: gen.value.plan.anchorTerm, expansionQueries: queries, expansionGenerated: true, nextSuggestions: gen.value.plan.nextSuggestions, semanticApplied: run.semanticApplied, semanticMessage: run.semanticMessage, channelsSearched: args.channels, channelStats: run.channelStats, verdicts };
     },
   }),
 

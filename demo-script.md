@@ -1,30 +1,29 @@
-# EarlyProof demo video — shot script (< 3 min)
+# EarlyProof demo video — spoken script (< 3 min), Magic Mirror cut
 
 ## Prep (before pressing record)
-- `cd /Users/guanxs/SeedUserFinder && bun local/build-client.ts` (already built; rebuild if App.tsx changed)
-- `PORT=3107 bun local/server.ts` → open http://localhost:3107 (a server is already up on 3107 — reuse it)
-- Muse API key saved in Step 0 → AI Setup (pill shows Live, not Offline). Key itself never appears on screen (only a •••• hint).
-- Use profile **plantexpert** (id 111): full loop state already live — round-4 plan (anchor "plant"), SE + Reddit lineup, 3 synthesized leads.
-- Browser window ~1280px wide. Version pill is top-right; record with a committed tree so it reads `0.2.0 · <sha>` without "dirty".
+- `cd /Users/guanxs/SeedUserFinder && bun local/build-client.ts` (rebuild if App.tsx changed)
+- `PORT=3107 bun local/server.ts` → open http://localhost:3107
+- Muse API key saved in Step 0 → AI Setup (pill shows Live). Never type or paste the key on camera (only a •••• hint).
+- Use profile **Magic Mirror (144)**: makeup AI coach for beginners. Round-2 plan (anchor "makeup"), 2 open forums + closed Reddit + 2 venues, 36 leads, 6 curious askers with quotes.
+- Browser ~1280px. Commit first so the version pill reads clean, no "dirty".
 - Do NOT open DevTools, the DB, or this file on camera.
 
-## Shots (total ~2:30)
-### 0:00–0:15 — Hook
-Say: "Building is cheap now — finding your first users is the bottleneck. EarlyProof finds seed users where they already complain about the problem, with AI verdicts and evidence you can act on."
+## 0:00–0:25 — Problem + why I built it
+Say: "AI made building cheap — anyone can ship an app in a weekend. So the bottleneck moved: it's no longer building, it's finding your first users. Founders guess where their people talk, or ask a chatbot that hallucinates channels with total confidence and remembers nothing. I built EarlyProof because I kept doing exactly that — so it hunts where people already complain about the problem, judges every candidate with evidence, and tracks the whole path from stranger to user."
 
-### 0:15–0:45 — Profile (Step 1)
-Show the plantexpert profile: audience "people who don't know what disease their plant has", pain, and the keywords. Say: "Three fields — audience, pain, workaround, plus the words they'd type. Everything downstream derives from this; nothing is reused across profiles."
+## 0:25–0:50 — Profile (Step 1)
+Show the Magic Mirror profile: audience "makeup beginners who feel overwhelmed", pain "tutorials move too fast, can't tell if my blending looks right", workaround "pausing YouTube every ten seconds". Say: "Three fields — audience, pain, workaround, plus the words they'd type. Everything downstream derives from this; nothing is reused across profiles. This one is my own product idea — an AI makeup coach that walks novices step by step."
 
-### 0:45–1:15 — Channels (Step 2)
-Show the lineup: **Stack Exchange open**, **Reddit POC closed until connected**. Point at the status checklist (Target locked / Web search / Muse plan). Say: "Muse maps where plant people talk and a live web search verifies it. Reddit needs your OAuth, so it's honestly closed — never faked."
+## 0:50–1:20 — Channels (Step 2) + the funnel
+Show the lineup: **MakeupTalk and Lipstick Alley open**, **Reddit closed until connected**, plus YouTube-comments and Facebook-group venues. Say: "Muse mapped where makeup beginners actually talk — two forums it can search right now, Reddit honestly closed until I connect it, and two join-by-hand venues. No hardcoded channel list: a dev-tool profile maps to Hacker News and GitHub instead." Press Search; point at the funnel strip as it lands: "Two channels searched, thirty-nine thousand threads found, thirty new — and six the model calls curious. That's the whole hunt in one glance."
 
-### 1:15–2:00 — Threads (Step 3)
-Scroll to "What the search will run" (round 4, anchor "plant", 7 queries). Press **Search**. While it runs: "Queries times channels — then Muse synthesizes every candidate before anything is shown." Show the 3 results with verdicts (seed_user 90/95/90) and verbatim evidence quotes. Open one lead: "Every verdict shows its evidence and quote."
+## 1:20–2:05 — Threads (Step 3) + semantic matching
+Scroll the results. Point at a semantic pill: "This 72 doesn't mean keyword overlap — it means the model judged this person's situation matches the pain. A paraphrase with zero shared words outranks a keyword-stuffed giveaway. That's matching people, not text." Open "makeup virgin needs help with bridal makeup": "Every verdict shows its confidence, its evidence, and a word-for-word quote. And the showcases — 'barbie inspired makeup look video tutorial' — get rejected as irrelevant with the evidence quoted, not hidden. Six rejections with reasons are as much the product as six finds."
 
-### 2:00–2:30 — Replies → Tracker → Cohort (Steps 4–6)
-Generate a draft for the strongest lead (large model writes it; tone check included). Show Tracker/Cohort briefly: "Outreach, replies, and cohort events tracked per lead." Close: "Profile → Channels → Threads → Replies → Tracker → Cohort. Live verdicts, no dummy data — without a real key every AI step says so instead of faking it."
+## 2:05–2:40 — Replies → Tracker → Cohort (Steps 4–6) + close
+Generate a draft for the bridal-makeup asker. Say: "Drafts are written in my voice, tone-checked, and outreach moves through Tracker into Cohort — replies, nudges, and a nightly Watcher that pings me when new seed users appear. And every time I overrule a verdict, the learning loop replays my corrections against the gate, so the system drifts toward my judgment." Close: "Profile to Cohort in six steps. Find people who already want what you're building — EarlyProof."
 
 ## Retake notes
-- Search takes ~15–30s live; don't cut mid-run — the phase line ("Searching… / Synthesizing N") is part of the story.
-- If web search is throttled, the UI says so ("the web check was throttled, so this lineup is Muse's plan only") — that's honesty, keep it in.
+- Search takes ~30–60s on the big forum pool; don't cut mid-run — the phase line ("Searching… / Synthesizing N") is part of the story.
+- If Lipstick Alley 403s on camera, that's the funnel being honest: "0 found" row plus the channel note. Keep it in — or cut that hunt and show the MakeupTalk row only.
 - Never type or paste the API key on camera.

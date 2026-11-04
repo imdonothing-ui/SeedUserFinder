@@ -65,7 +65,8 @@ function LlmSetupGate({ onGoSettings }: { onGoSettings: () => void }) {
 // connection needed. Closed channels are never in this default list.
 
 // Plain-words result narration shared by search and expand-and-rerun.
-function describeSearch(r: { found: number; created: number; discarded: number; pruned: number; promoted: number; synthesized: number; synthesisStatus: string; synthesisMessage: string; errors: { channel: string; message: string }[]; expansionRound: number; expansionAnchor: string; expansionQueries: string[]; nextSuggestions: string[]; semanticApplied: boolean; semanticMessage: string }, expanded: boolean) {
+type SearchResult = { found: number; created: number; discarded: number; pruned: number; promoted: number; synthesized: number; synthesisStatus: string; synthesisMessage: string; errors: { channel: string; message: string }[]; expansionRound: number; expansionAnchor: string; expansionQueries: string[]; nextSuggestions: string[]; semanticApplied: boolean; semanticMessage: string; channelsSearched: string[]; channelStats: { channel: string; found: number; kept: number; created: number }[]; verdicts: { seedUser: number; curious: number; irrelevant: number; pending: number } };
+function describeSearch(r: SearchResult, expanded: boolean) {
   const errs = r.errors.map((e) => `${e.channel}: ${e.message}`).join(" ");
   const dropped = r.discarded ? ` ${r.discarded} result${r.discarded === 1 ? "" : "s"} dropped by the light pre-filter — no domain anchor from your profile in the post, or no pain/workaround signal alongside the anchor.` : "";
   const promotedNote = r.promoted ? ` ${r.promoted} top anchored candidate${r.promoted === 1 ? "" : "s"} had the domain anchor but no clear pain/workaround signal, so ${r.promoted === 1 ? "it was" : "they were"} passed up to Muse anyway — the pre-filter is a safety net, and Muse makes the relevance call with evidence and confidence.` : "";
@@ -75,7 +76,47 @@ function describeSearch(r: { found: number; created: number; discarded: number; 
   const sem = r.semanticApplied ? " Candidates were then ordered by meaning: Muse reranked them against your pain, so posts that mean the same thing outrank posts that just share keywords." : (r.semanticMessage ? ` Semantic rerank skipped (${r.semanticMessage}); order is keyword-based.` : "");
   const synth = r.synthesisStatus === "ok" ? ` Muse then synthesized the candidates: ${r.synthesized} result${r.synthesized === 1 ? "" : "s"} classified with verdicts, evidence quotes and confidence — only those synthesized results are shown as Threads.` : ` Muse synthesis did not complete (${r.synthesisMessage}) — raw candidates are NOT shown as results; run synthesis on the Threads step to see them.`;
   const zero = r.synthesisStatus === "ok" && r.synthesized === 0 ? " That is 0 synthesized results — not a dead end: Muse's next expansion suggestions are shown on the Threads step, with a one-click expand-and-re-run." : "";
-  return `Search done: ${r.found} candidates found, ${r.created} new.${dropped}${promotedNote}${cleaned}${hnNote}${exp}${sem}${synth}${zero}${errs ? " " + errs : ""}`;
+  const verd = r.synthesisStatus === "ok" && r.created > 0 ? ` Of this hunt's ${r.created} new thread${r.created === 1 ? "" : "s"}, Muse calls ${r.verdicts.seedUser} seed user${r.verdicts.seedUser === 1 ? "" : "s"}, ${r.verdicts.curious} curious, ${r.verdicts.irrelevant} irrelevant${r.verdicts.pending ? `, ${r.verdicts.pending} still waiting` : ""}.` : "";
+  return `Search done: ${r.found} candidates found, ${r.created} new.${dropped}${promotedNote}${cleaned}${hnNote}${exp}${sem}${synth}${verd}${zero}${errs ? " " + errs : ""}`;
+}
+
+/* Funnel strip: what the last hunt actually did — channels searched, threads
+   found, new for you, seed users — plus per-channel rows. Counts come from
+   the hunt result itself, never recomputed client-side. */
+function FunnelStrip({ r }: { r: SearchResult }) {
+  const stages = [
+    { n: r.channelsSearched.length, label: r.channelsSearched.length === 1 ? "channel searched" : "channels searched" },
+    { n: r.found, label: "threads found" },
+    { n: r.created, label: "new for you" },
+    { n: r.verdicts.seedUser, label: r.verdicts.seedUser === 1 ? "seed user" : "seed users" },
+  ];
+  return (
+    <div className="mt-3 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface-alt)] p-3" aria-label="Hunt funnel">
+      <div className="flex flex-wrap items-stretch gap-2">
+        {stages.map((s, i) => (
+          <div key={s.label} className="flex items-stretch gap-2">
+            {i > 0 && <span aria-hidden="true" className="self-center text-[var(--dim)]">→</span>}
+            <div className="rounded-[var(--radius)] bg-[var(--surface)] px-3 py-2 text-center">
+              <div className="font-display text-xl font-bold">{s.n}</div>
+              <div className="text-xs text-[var(--dim)]">{s.label}</div>
+            </div>
+          </div>
+        ))}
+        {(r.verdicts.curious > 0 || r.verdicts.irrelevant > 0 || r.verdicts.pending > 0) && (
+          <div className="self-center text-xs text-[var(--dim)]">
+            + {r.verdicts.curious} curious · {r.verdicts.irrelevant} irrelevant{r.verdicts.pending > 0 && ` · ${r.verdicts.pending} waiting`}
+          </div>
+        )}
+      </div>
+      {r.channelStats.length > 0 && (
+        <ul className="mt-2 space-y-1 text-xs text-[var(--dim)]">
+          {r.channelStats.map((c) => (
+            <li key={c.channel}>{CHANNEL_LABEL[c.channel] ?? c.channel} — {c.found} found → {c.kept} passed filter → {c.created} new</li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
 }
 
 type StepId = "aiconfig" | "profile" | "channels" | "threads" | "replies" | "tracker" | "cohort";
@@ -141,7 +182,7 @@ export function App() {
   const [subs, setSubs] = useState("");
   const [sortByScore, setSortByScore] = useState(true);
   const [runId, setRunId] = useState(0);
-  const [lastSearch, setLastSearch] = useState<{ found: number; created: number; synthesized: number } | null>(null);
+  const [lastSearch, setLastSearch] = useState<SearchResult | null>(null);
   const [searchResult, setSearchResult] = useState("");
   const data = stateQ.data;
   const profiles = data?.profiles ?? [];
@@ -698,8 +739,8 @@ function ChannelsStep({ profile, expansions, llmConfigured, connections, channel
 function ThreadsStep({ profile, leads, expansions, llmConfigured, channels, subs, setSubs, sortByScore, setSortByScore, lastSearch, setLastSearch, runId, setRunId, result, setResult, onGoReplies, flash, invalidate }: {
   profile: Profile; leads: Lead[]; expansions: State["expansions"]; llmConfigured: boolean;
   channels: string[]; subs: string; setSubs: (s: string) => void; sortByScore: boolean; setSortByScore: (v: boolean) => void;
-  lastSearch: { found: number; created: number; synthesized: number } | null;
-  setLastSearch: (s: { found: number; created: number; synthesized: number } | null) => void;
+  lastSearch: SearchResult | null;
+  setLastSearch: (s: SearchResult | null) => void;
   runId: number; setRunId: (id: number) => void; result: string; setResult: (s: string) => void;
   onGoReplies: () => void; flash: (m: string) => void; invalidate: () => void;
 }) {
@@ -711,7 +752,7 @@ function ThreadsStep({ profile, leads, expansions, llmConfigured, channels, subs
     onSuccess: (r) => {
       invalidate();
       setRunId(r.runId);
-      setLastSearch({ found: r.found, created: r.created, synthesized: r.synthesized });
+      setLastSearch(r);
       setResult(describeSearch(r, false));
       if (r.synthesized) flash(`Search + synthesis done — ${r.synthesized} synthesized threads below, each with its Muse verdict and evidence quote. Draft the good ones and they land in Replies.`);
       else if (r.pruned) flash("Search done — old unclassified leads with no domain anchor were cleared from your queue.");
@@ -752,7 +793,7 @@ function ThreadsStep({ profile, leads, expansions, llmConfigured, channels, subs
     onSuccess: (r) => {
       invalidate();
       setRunId(r.runId);
-      setLastSearch({ found: r.found, created: r.created, synthesized: r.synthesized });
+      setLastSearch(r);
       if (r.synthesized) flash(`Expanded search done — round ${r.expansionRound} found ${r.synthesized} synthesized result${r.synthesized === 1 ? "" : "s"}, deduplicated against the leads you already had.`);
       else flash("Expanded search done — 0 synthesized results. Muse's next moves are below.");
     },
@@ -796,7 +837,7 @@ function ThreadsStep({ profile, leads, expansions, llmConfigured, channels, subs
         <button type="button" aria-label="Search for seed users" className={btnPrimary + " mt-3 w-full py-3 text-base"} disabled={!channels.length || search.isPending || !llmConfigured} onClick={() => search.mutate()}>{search.isPending ? "Searching, then synthesizing with Muse…" : channels.length ? `Search ${channels.length} channel${channels.length === 1 ? "" : "s"} for seed users` : "Pick channels on the Channels step first"}</button>
         {runQ.data && runId > 0 && <p role="status" className="mt-2 rounded-[var(--radius)] bg-[var(--accent-bg)] p-2 text-sm font-medium">{runQ.data.detail}</p>}
         {result && <p role="status" className="mt-2 text-sm">{result}</p>}
-        {lastSearch && <p className="mt-2 text-xs text-[var(--dim)]" role="status">Last search: {lastSearch.found} candidates found, {lastSearch.created} new, {lastSearch.synthesized} synthesized.</p>}
+        {lastSearch && <FunnelStrip r={lastSearch} />}
       </div>
       <div className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-4">
         <details>

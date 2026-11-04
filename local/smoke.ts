@@ -15,7 +15,7 @@ import { Actions, analyseText, shouldRetryFetch, matchVariant, normText, synonym
 import { bm25Order, fuseRanks } from "../server/src/retrieval.ts";
 import { extractOutlinkDomains, forumGraphVenues, parseSeRelatedSites, registrable, seGraphVenues } from "../server/src/venue-graph.ts";
 import { collectCorrections, replayCorrections } from "../server/src/eval.ts";
-import { buildSemanticRerankPrompt, parseSemanticScores, runChannelSearch } from "../server/src/actions.ts";
+import { buildSemanticRerankPrompt, fetchText, parseSemanticScores, runChannelSearch, SITEMAP_MAX_BYTES } from "../server/src/actions.ts";
 import { META_MODEL, buildResponsesRequest, extractJsonValue, extractResponseText, isDirectKey, completeViaMetaModel } from "../server/src/meta-api.ts";
 import { GATE_CORPUS, WILLOW, SECONDHIFT, DEV, MAKEUP, DAWNLITE } from "./gate-corpus.ts";
 import * as schema from "../server/src/schema.ts";
@@ -466,6 +466,17 @@ check(genR.semanticApplied === false, "generic hunt never claims a rerank", null
 const evProfRow = (await db.select().from(schema.profiles).where(eq(schema.profiles.id, evProf.id)))[0]!;
 const skipRun = await runChannelSearch(ctx as never, evProfRow, ["no-such-channel"], "", ["laid off with bills due"]);
 check(skipRun.found === 0 && skipRun.semanticApplied === false && skipRun.semanticMessage.includes("fewer than 2"), "zero-candidate run skips rerank with an honest message", skipRun.semanticMessage);
+// Funnel fields: every hunt carries per-channel rows (zero rows included)
+// plus this hunt's verdict counts.
+check(skipRun.channelStats.length === 1 && skipRun.channelStats[0].channel === "no-such-channel" && skipRun.channelStats[0].found === 0, "funnel lists the searched channel even at zero", skipRun.channelStats);
+check(Array.isArray(emptyR.channelsSearched) && emptyR.channelStats.length === 0 && emptyR.verdicts.seedUser === 0 && emptyR.verdicts.pending === 0, "empty hunt reports an empty funnel, never omits it", null);
+// Sitemap budget regression: the global 8MB fetch cap once silently dropped
+// whole sitemap files (MakeupTalk's 9.3MB slice vanished — half the forum).
+// The cap mechanism trips on a tiny budget, and the sitemap budget stays
+// above the biggest file actually seen in the wild.
+const tiny = await fetchText(`data:text/plain,${"x".repeat(100)}`, {}, 10);
+check(tiny.ok === false && tiny.status === 413, "fetchText refuses bodies over budget instead of truncating", tiny.status);
+check(SITEMAP_MAX_BYTES >= 10_000_000, "sitemap budget exceeds the 9.3MB file that exposed the silent drop", SITEMAP_MAX_BYTES);
 // A profile's hunt belongs to its exact words: new/edited text gets a fresh
 // hunt, untouched text keeps its plan — never another profile's channels.
 const SIG_A = { productName: "Second hand market place", productDesc: "sell second hand stuff", audience: "buyers", pain: "no buyers", workaround: "", keywords: "", coreAction: "" };
