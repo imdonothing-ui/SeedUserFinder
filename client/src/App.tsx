@@ -43,20 +43,20 @@ function fmtDate(iso: string): string {
   return d.toLocaleDateString(undefined, { month: "short", day: "numeric" }) + " · " + d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
 }
 
-const inputCls = "w-full rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] px-3 py-2.5 text-sm text-[var(--text)] placeholder:text-[var(--dim)]";
+const inputCls = "w-full rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface)] px-3 py-2.5 text-sm text-[var(--text)] placeholder:text-[var(--dim)]";
 const labelCls = "block text-xs font-semibold uppercase tracking-wide text-[var(--dim)] mb-1";
-const btnPrimary = "rounded-[var(--radius)] bg-[var(--accent)] px-4 py-2.5 text-sm font-semibold text-[var(--accent-text)] disabled:opacity-50";
-const btnGhost = "rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-sm font-medium text-[var(--text)] disabled:opacity-50";
+const btnPrimary = "rounded-full bg-[var(--accent)] px-5 py-2.5 text-sm font-semibold text-[var(--accent-text)] disabled:opacity-50";
+const btnGhost = "rounded-full border border-[var(--border)] bg-[var(--surface)] px-4 py-2 text-sm font-medium text-[var(--text)] disabled:opacity-50";
 const btnSmall = "rounded-full border border-[var(--border)] bg-[var(--surface)] px-2.5 py-1 text-xs font-medium text-[var(--text)] disabled:opacity-50";
 
 function LlmSetupGate({ onGoSettings }: { onGoSettings: () => void }) {
   return (
     <section className="mt-5 rounded-[var(--radius)] border-2 border-[var(--amber)] bg-[var(--surface)] p-5" aria-label="Muse LLM setup required">
-      <h2 className="font-serif text-xl font-bold">Configure AI (one-time setup)</h2>
+      <h2 className="font-display text-xl font-bold">Configure AI (one-time setup)</h2>
       <p className="mt-2 text-sm leading-relaxed">Your target profile is done. Now configure Muse — this is a one-time setup: the configuration is saved and persists, so you will not be asked again on the next search or visit. You can still change it later anytime from <strong>Edit AI config</strong> in Settings. EarlyProof runs on Muse: pain-language expansion, lead classification, outreach drafts, feedback summaries and next-experiment suggestions are core steps of the flow — not optional add-ons — and there is no rule-only fallback mode. Until Muse is configured, search, classification, drafts and the rest of the core flow stay blocked.</p>
       <p className="mt-2 text-sm leading-relaxed"><strong>What to do:</strong> open the AI settings in this app and enter <strong>your Muse API key</strong> there — models are picked automatically, so there is nothing else to configure. Enter it <strong>in the app only — never in chat</strong>. Your key is stored server-side and never shown again beyond its last 4 characters.</p>
       <p className="mt-2 text-sm text-[var(--dim)]">The rule-based relevance check still runs underneath as a pre-filter and safety net — but on its own it clears nobody for outreach. Every lead must be classified by Muse before it can be used, and nothing ever posts without you approving the exact text.</p>
-      <button type="button" className={btnPrimary + " mt-3"} onClick={onGoSettings}>Open AI settings</button>
+      <button type="button" className={btnPrimary + " mt-3"} onClick={onGoSettings}>Open step 0 — AI config</button>
     </section>
   );
 }
@@ -65,43 +65,52 @@ function LlmSetupGate({ onGoSettings }: { onGoSettings: () => void }) {
 // connection needed. Closed channels are never in this default list.
 
 // Plain-words result narration shared by search and expand-and-rerun.
-function describeSearch(r: { found: number; created: number; discarded: number; pruned: number; promoted: number; synthesized: number; synthesisStatus: string; synthesisMessage: string; errors: { channel: string; message: string }[]; expansionRound: number; expansionAnchor: string; expansionQueries: string[]; nextSuggestions: string[] }, expanded: boolean, isFirstFeedback: boolean) {
+function describeSearch(r: { found: number; created: number; discarded: number; pruned: number; promoted: number; synthesized: number; synthesisStatus: string; synthesisMessage: string; errors: { channel: string; message: string }[]; expansionRound: number; expansionAnchor: string; expansionQueries: string[]; nextSuggestions: string[]; semanticApplied: boolean; semanticMessage: string }, expanded: boolean) {
   const errs = r.errors.map((e) => `${e.channel}: ${e.message}`).join(" ");
   const dropped = r.discarded ? ` ${r.discarded} result${r.discarded === 1 ? "" : "s"} dropped by the light pre-filter — no domain anchor from your profile in the post, or no pain/workaround signal alongside the anchor.` : "";
   const promotedNote = r.promoted ? ` ${r.promoted} top anchored candidate${r.promoted === 1 ? "" : "s"} had the domain anchor but no clear pain/workaround signal, so ${r.promoted === 1 ? "it was" : "they were"} passed up to Muse anyway — the pre-filter is a safety net, and Muse makes the relevance call with evidence and confidence.` : "";
   const cleaned = r.pruned ? ` ${r.pruned} old unclassified lead${r.pruned === 1 ? "" : "s"} with no domain anchor were removed (leads Muse already synthesized are never pruned).` : "";
   const exp = r.expansionQueries.length ? ` Muse's expansion plan (round ${r.expansionRound}, anchored to “${r.expansionAnchor}”) ran ${r.expansionQueries.length} ${expanded ? "new, broader " : ""}queries: ${r.expansionQueries.map((q) => `“${q}”`).join(", ")}.` : "";
-  const hnNote = isFirstFeedback ? " Hacker News was searched Ask HN-only: help-request phrasing (\"how did you get your first users\", \"launched to crickets\", \"no traction\"…), and only posts whose title starts with \"Ask HN\" counted as candidates — \"Show HN\" showcases were excluded before the pre-filter." : "";
-  const synth = r.synthesisStatus === "ok" ? ` Muse then synthesized the candidates: ${r.synthesized} result${r.synthesized === 1 ? "" : "s"} classified with verdicts, evidence quotes and confidence — only those synthesized results are shown in Results.` : ` Muse synthesis did not complete (${r.synthesisMessage}) — raw candidates are NOT shown as results; run synthesis in Results to see them.`;
-  const zero = r.synthesisStatus === "ok" && r.synthesized === 0 ? " That is 0 synthesized results — not a dead end: Muse's next expansion suggestions are shown in Results, with a one-click expand-and-re-run." : "";
-  return `Search done: ${r.found} candidates found, ${r.created} new.${dropped}${promotedNote}${cleaned}${hnNote}${exp}${synth}${zero}${errs ? " " + errs : ""}`;
+  const hnNote = " Hacker News is always searched Ask HN-only: help-request posts count, \"Show HN\" showcases never do.";
+  const sem = r.semanticApplied ? " Candidates were then ordered by meaning: Muse reranked them against your pain, so posts that mean the same thing outrank posts that just share keywords." : (r.semanticMessage ? ` Semantic rerank skipped (${r.semanticMessage}); order is keyword-based.` : "");
+  const synth = r.synthesisStatus === "ok" ? ` Muse then synthesized the candidates: ${r.synthesized} result${r.synthesized === 1 ? "" : "s"} classified with verdicts, evidence quotes and confidence — only those synthesized results are shown as Threads.` : ` Muse synthesis did not complete (${r.synthesisMessage}) — raw candidates are NOT shown as results; run synthesis on the Threads step to see them.`;
+  const zero = r.synthesisStatus === "ok" && r.synthesized === 0 ? " That is 0 synthesized results — not a dead end: Muse's next expansion suggestions are shown on the Threads step, with a one-click expand-and-re-run." : "";
+  return `Search done: ${r.found} candidates found, ${r.created} new.${dropped}${promotedNote}${cleaned}${hnNote}${exp}${sem}${synth}${zero}${errs ? " " + errs : ""}`;
 }
 
-function AiConfigStatus({ llm, onEdit }: { llm?: State["llm"]; onEdit: () => void }) {
-  if (!llm?.configured) return null;
+type StepId = "aiconfig" | "profile" | "channels" | "threads" | "replies" | "tracker" | "cohort";
+const STEP_META: { id: StepId; n: number; label: string; title: string; sub: string }[] = [
+  { id: "aiconfig", n: 0, label: "AI config", title: "Connect Muse — once", sub: "One key, saved in the app, never asked again. Pain expansion, channel hunting, synthesis, drafts and summaries all run on Muse Spark 1.3 — without it the rest of the flow stays blocked, and there is no rule-only fallback." },
+  { id: "profile", n: 1, label: "Profile", title: "Who are your seed users?", sub: "Three fields. Everything downstream — channels, threads, drafts — matches against this." },
+  { id: "channels", n: 2, label: "Channels", title: "Find where they talk", sub: "Muse expands your profile, the web is checked for real discussion threads, and each profile gets its own lineup: open channels to search now, closed ones to connect." },
+  { id: "threads", n: 3, label: "Threads", title: "Search, then read the threads", sub: "One search across your open channels. Muse synthesizes every candidate with a verdict, evidence quote and confidence." },
+  { id: "replies", n: 4, label: "Replies", title: "Draft, approve, send", sub: "Every reply is drafted in your voice and nothing sends without your approval. You join closed places and send yourself." },
+  { id: "tracker", n: 5, label: "Tracker", title: "Follow every reply", sub: "Sent, but no reply movement yet? Nudges surface it. Move each person honestly — a reply that never becomes a conversation is not a seed user." },
+  { id: "cohort", n: 6, label: "Cohort", title: "Watch them use it", sub: "Tagged invites keep your seed users' usage separate from everyone else's. Signals only — whether it counts as PMF is your call." },
+];
+
+function Topbar({ onHome }: { onHome: () => void }) {
+  const vQ = useQuery({ queryKey: ["version"], queryFn: () => api.getVersion({}), staleTime: 60000 });
   return (
-    <div className="mt-3 flex flex-wrap items-center gap-2 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-3 text-sm" aria-label="AI configuration status">
-      <span className="rounded-full bg-[var(--accent-bg)] px-2 py-0.5 text-xs font-semibold text-[var(--accent)]">AI configured ✓</span>
-      {llm.direct
-        ? <span className="rounded-full bg-[var(--green-bg)] px-2 py-0.5 text-xs font-semibold text-[var(--accent)]">Live · Muse Spark 1.3</span>
-        : <span className="rounded-full bg-[var(--amber-bg)] px-2 py-0.5 text-xs font-semibold text-[var(--amber)]">Offline stub — judgments are test data until a tested key is saved</span>}
-      <span className="text-[var(--dim)]">Muse · key {llm.keyHint || "saved"} · models automatic</span>
-      <span className="text-[var(--dim)]">Saved once — you won't be asked again.</span>
-      <button type="button" className={btnGhost + " ml-auto"} onClick={onEdit}>Edit AI config</button>
-    </div>
+    <header className="flex items-center gap-3 rounded-full border border-[var(--border)] bg-[var(--surface)] py-2 pl-4 pr-4 shadow-sm">
+      <button type="button" onClick={onHome} className="flex items-center gap-2" aria-label="EarlyProof home">
+        <span className="inline-block h-3.5 w-3.5 rounded-full bg-[var(--accent)]" aria-hidden="true" />
+        <span className="font-display text-base font-bold tracking-tight">EarlyProof</span>
+      </button>
+      {vQ.data && <span className="ml-auto rounded-full border border-[var(--border)] px-2 py-0.5 text-xs text-[var(--dim)]" title="App version · git commit — so you always know which build you're testing">{vQ.data.label}</span>}
+    </header>
   );
 }
 
-function VersionHeader() {
-  const vQ = useQuery({ queryKey: ["version"], queryFn: () => api.getVersion({}), staleTime: 60000 });
+function StepHead({ step }: { step: StepId }) {
+  const m = STEP_META.find((s) => s.id === step);
+  if (!m) return null;
   return (
-    <header className="mb-4">
-      <div className="flex flex-wrap items-center gap-2">
-        <h1 className="font-serif text-2xl font-bold">EarlyProof</h1>
-        {vQ.data && <span className="rounded-full border border-[var(--border)] px-2 py-0.5 text-xs text-[var(--dim)]" title="App version · git commit — so you always know which build you're testing">{vQ.data.label}</span>}
-      </div>
-      <p className="mt-1 text-sm leading-relaxed text-[var(--dim)]">As AI makes building cheap, finding users is the bottleneck. EarlyProof finds your first seed users where they already talk about the pain — then drafts the outreach, tracks replies, and follows the cohort. Asking any LLM to search gives you a list; EarlyProof runs the loop: anchored matching, Muse verdicts with evidence, approve-first outreach, reply nudges, and cohort tracking.</p>
-    </header>
+    <div className="mt-6">
+      <p className="text-xs font-semibold uppercase tracking-widest text-[var(--accent)]">{m.n === 0 ? "Setup · before step 1" : `Step ${m.n} of 6 — ${m.label}`}</p>
+      <h2 className="mt-1 font-display text-3xl font-bold tracking-tight">{m.title}</h2>
+      <p className="mt-2 max-w-xl text-sm leading-relaxed text-[var(--dim)]">{m.sub}</p>
+    </div>
   );
 }
 
@@ -117,14 +126,14 @@ function DemoButton({ onDone, flash }: { onDone: (profileId: number) => void; fl
 export function App() {
   const qc = useQueryClient();
   const stateQ = useQuery({ queryKey: ["state"], queryFn: () => api.getState({}) });
-  // ONE navigation, in workflow order: Profile → Search → Results → Tracker
-  // → Cohort, plus Settings. The old two-bar layout (stepper on top, tabs
-  // below, disagreeing with each other) is gone on purpose.
-  const [tab, setTab] = useState<"profile" | "search" | "results" | "tracker" | "cohort" | "settings">("search");
+  // ONE navigation, in workflow order: Profile → Channels → Threads →
+  // Replies → Tracker → Cohort, plus Settings.
+  const [tab, setTab] = useState<StepId>("channels");
+  const go = (s: StepId) => { setTab(s); window.scrollTo({ top: 0, behavior: "smooth" }); };
   const [profileId, setProfileId] = useState<number | null>(null);
   const [notice, setNotice] = useState("");
-  // Search-panel state lives here so it survives tab switches: toggling a
-  // channel, running a search, then checking Results must not reset it.
+  // Search-panel state lives here so it survives step switches: toggling a
+  // channel, running a search, then checking Threads must not reset it.
   // It is ALWAYS rebuilt from the active profile — never inherited, never
   // generic: channels start empty and recs fill them; switching profiles
   // wipes channels, subs, run and result together (see reset below).
@@ -144,10 +153,9 @@ export function App() {
   const feedback = useMemo(() => (data?.feedback ?? []).filter((f) => !activeProfile || f.profileId === activeProfile.id), [data, activeProfile]);
   const summaries = useMemo(() => (data?.summaries ?? []).filter((s) => !activeProfile || s.profileId === activeProfile.id), [data, activeProfile]);
   const llm = data?.llm;
-  // Profile-aware channel picks: which channels fit THIS profile (signals +
-  // Muse plan). Applied per profile AND per plan version — when the
-  // auto-generated expansion plan lands, picks sharpen. The founder's own
-  // toggles always win: once touched, auto-apply never overwrites.
+  // Plan-picked channels, applied per profile AND per plan version — when
+  // the auto-generated expansion plan lands, picks sharpen. The founder's
+  // own toggles always win: once touched, auto-apply never overwrites.
   // (Below the profile derivation — it reads activeProfile.)
   const [recsAppliedKey, setRecsAppliedKey] = useState("");
   const channelsTouched = useRef(false);
@@ -171,12 +179,12 @@ export function App() {
     setRecsAppliedKey(key);
   }, [recQ.data, recsAppliedKey]);
   const recReasons: Record<string, string> = {};
-  const openRecs: { channel: string; label: string; fit: string }[] = [];
+  const openRecs: { channel: string; label: string; fit: string; verified: boolean }[] = [];
   for (const r of recQ.data?.recs ?? []) {
     recReasons[r.channel] = r.reasons.join(" · ");
-    if (!r.needsConnection) openRecs.push({ channel: r.channel, label: r.label, fit: r.fit });
+    if (!r.needsConnection) openRecs.push({ channel: r.channel, label: r.label, fit: r.fit, verified: r.verified });
   }
-  const recVenues: { name: string; where: string; why: string; url: string }[] = recQ.data?.venues ?? [];
+  const recVenues: { name: string; where: string; why: string; url: string; src: string }[] = recQ.data?.venues ?? [];
   const recMessage = recQ.data?.status === "ok" ? recQ.data.message : "";
   const webOk = recQ.data?.status === "ok" ? !!recQ.data.webOk : false;
 
@@ -196,8 +204,10 @@ export function App() {
     onError: () => flash("Expansion plan failed — open Search and tap Re-expand to retry."),
   });
   const autoPlannedKey = useRef("");
-  const activePlanTextKey = activeProfile ? `${activeProfile.id}:${[activeProfile.productName, activeProfile.productDesc, activeProfile.audience, activeProfile.pain, activeProfile.workaround, activeProfile.keywords, activeProfile.coreAction].join("|")}` : "";
   const activeExpansionsCount = (data?.expansions ?? []).filter((x) => x.profileId === activeProfile?.id).length;
+  // The plan count rides in the key so a stub purge (count drops to 0)
+  // re-arms auto-generation instead of sitting plan-less forever.
+  const activePlanTextKey = activeProfile ? `${activeProfile.id}:${[activeProfile.productName, activeProfile.productDesc, activeProfile.audience, activeProfile.pain, activeProfile.workaround, activeProfile.keywords, activeProfile.coreAction].join("|")}|n=${activeExpansionsCount}` : "";
   useEffect(() => {
     if (!llm?.configured || !activeProfile || activeExpansionsCount > 0 || autoPlannedKey.current === activePlanTextKey || autoPlan.isPending) return;
     autoPlannedKey.current = activePlanTextKey;
@@ -205,8 +215,14 @@ export function App() {
   }, [llm?.configured, activeProfile, activeExpansionsCount, activePlanTextKey]);
 
   const hasProfile = profiles.length > 0;
-  const resultCount = leads.filter((l) => ["new", "drafted", "approved"].includes(l.status) && l.llmCategory).length;
+  // One step per job: threads show synthesized finds, replies show drafts in
+  // flight, tracker shows everyone being worked.
+  const threadsCount = leads.filter((l) => ["new", "drafted", "approved"].includes(l.status) && l.llmCategory).length;
+  const repliesCount = leads.filter((l) => l.status !== "dismissed" && ((l.draftBody ?? "").trim() || ["drafted", "approved", "sent"].includes(l.status))).length;
   const trackerCount = leads.filter((l) => l.status !== "dismissed").length;
+  // No profile yet (outside AI config) means step 1, always.
+  const step: StepId = (!activeProfile && tab !== "aiconfig") ? "profile" : tab;
+  const stepCount = (id: StepId) => id === "threads" ? threadsCount : id === "replies" ? repliesCount : id === "tracker" ? trackerCount : 0;
 
   if (stateQ.isPending) return <div className="min-h-screen bg-[var(--bg)] px-4 py-16 text-center text-sm text-[var(--dim)]">Loading EarlyProof…</div>;
   if (stateQ.error) return <div className="min-h-screen bg-[var(--bg)] px-4 py-16 text-center text-sm text-[var(--red)]">Couldn’t load your workspace. Pull to retry.</div>;
@@ -215,15 +231,13 @@ export function App() {
     <div className="min-h-screen bg-[var(--bg)] text-[var(--text)]">
       <SafeAreaTopScrim backgroundColor="var(--bg)" />
       <main className="mx-auto w-full max-w-3xl px-4 pb-28 pt-5">
-        <VersionHeader />
-        <AiConfigStatus llm={llm} onEdit={() => setTab("settings")} />
+        <Topbar onHome={() => go("profile")} />
 
-        {activeProfile && (tab === "search" || tab === "results") && (
-          <div className="mt-3 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-3 text-sm">
+        {activeProfile && (step === "channels" || step === "threads" || step === "replies") && (
+          <button type="button" onClick={() => go("profile")} className="mt-3 block w-full rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-3 text-left text-sm" aria-label="Hunting as this profile — open Profile to change it">
             <p><span className="font-semibold">{activeProfile.productName}</span> <span className="text-[var(--dim)]">— {activeProfile.productDesc || "no description"}</span></p>
             <p className="mt-1"><span className="font-semibold">Whose pain:</span> {activeProfile.audience || "—"}{activeProfile.pain ? ` — ${activeProfile.pain}` : ""}</p>
-            {parseJsonArr(activeProfile.painPhrases).length > 0 && <p className="mt-1"><span className="font-semibold">AI pain phrases:</span> {parseJsonArr(activeProfile.painPhrases).slice(0, 4).join(" · ")}{parseJsonArr(activeProfile.painPhrases).length > 4 ? " …" : ""} <span className="text-[var(--dim)]">(full list on the Profile tab)</span></p>}
-          </div>
+          </button>
         )}
 
         {notice && (
@@ -232,43 +246,52 @@ export function App() {
           </div>
         )}
 
-        {/* The one and only navigation, in the order you actually use it. */}
-        <nav aria-label="Sections" className="mt-5 grid grid-cols-6 gap-1 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface-alt)] p-1">
-          {([
-            ["profile", `Profile${hasProfile ? " ✓" : ""}`],
-            ["search", "Search"],
-            ["results", `Results${resultCount ? ` (${resultCount})` : ""}`],
-            ["tracker", `Tracker${trackerCount ? ` (${trackerCount})` : ""}`],
-            ["cohort", "Cohort"],
-            ["settings", "Settings"],
-          ] as const).map(([k, label]) => (
-            <button key={k} type="button" aria-pressed={tab === k} onClick={() => setTab(k)} className={`rounded-[8px] px-1 py-2 text-[12px] font-semibold ${tab === k ? "bg-[var(--surface)] shadow-sm" : "text-[var(--dim)]"}`}>{label}</button>
-          ))}
+        {/* The one and only navigation: six steps in the order you use them. */}
+        <nav aria-label="Steps" className="mt-5 flex gap-1 overflow-x-auto rounded-full border border-[var(--border)] bg-[var(--surface)] p-1 shadow-sm">
+          {STEP_META.map((s) => {
+            const n = stepCount(s.id);
+            return (
+              <button key={s.id} type="button" aria-pressed={step === s.id} onClick={() => go(s.id)} className={`whitespace-nowrap rounded-full px-3 py-2 text-[12px] font-semibold ${step === s.id ? "bg-[var(--text)] text-[var(--bg)]" : "text-[var(--dim)]"}`}>{s.n}. {s.label}{s.id === "profile" && hasProfile ? " ✓" : ""}{n > 0 ? ` (${n})` : ""}</button>
+            );
+          })}
         </nav>
 
-        {/* Profile comes before AI config. A founder with no profile sees the
-            prompt below, not the AI gate. A configured founder never sees the
-            gate again — only the Edit AI config option in the status card. */}
-        {!activeProfile && tab !== "settings" && (
-          <div className="mt-6 rounded-[var(--radius)] border border-dashed border-[var(--border)] p-4 text-sm text-[var(--dim)]">
-            <p><strong className="text-[var(--text)]">First, the profile:</strong> create a target profile — product, what it does, whose pain it solves. Everything in EarlyProof matches against that. Then search, then results.</p>
-            <div className="mt-3"><DemoButton onDone={(id) => { setProfileId(id); setTab("search"); invalidate(); }} flash={flash} /></div>
+        {/* Step 1 hero for a founder with no profile yet. */}
+        {!activeProfile && step !== "aiconfig" ? (
+          <div className="mt-8 max-w-xl">
+            <p className="text-xs font-semibold uppercase tracking-widest text-[var(--accent)]">Step 1 of 6 — Profile</p>
+            <h1 className="mt-2 font-display text-4xl font-bold tracking-tight">Find your first seed users.</h1>
+            <p className="mt-3 text-base leading-relaxed text-[var(--dim)]">As AI makes building cheap, finding users is the bottleneck. EarlyProof finds them where they already talk about the pain — then drafts the outreach, tracks replies, and follows the cohort. Start with the profile below — it takes a minute.</p>
+            <div className="mt-4"><DemoButton onDone={(id) => { setProfileId(id); go("channels"); invalidate(); }} flash={flash} /></div>
           </div>
+        ) : (
+          <StepHead step={step} />
         )}
 
-        {activeProfile && !llm?.configured && tab !== "settings" && tab !== "profile" && <LlmSetupGate onGoSettings={() => setTab("settings")} />}
+        {activeProfile && !llm?.configured && step !== "aiconfig" && step !== "profile" && <LlmSetupGate onGoSettings={() => go("aiconfig")} />}
 
-        {tab === "profile" && <ProfileTab profiles={profiles} activeProfile={activeProfile} onSelect={(id) => setProfileId(id)} onDone={(id) => { if (id) { setProfileId(id); setTab("search"); } invalidate(); }} llm={llm} flash={flash} invalidate={invalidate} />}
-        {llm?.configured && activeProfile && tab === "search" && <SearchTab profile={activeProfile} expansions={(data?.expansions ?? []).filter((x) => x.profileId === activeProfile.id)} llmConfigured={!!llm?.configured} connections={data?.connections ?? []} channels={channels} setChannels={(c) => { channelsTouched.current = true; setChannels(c); }} subs={subs} setSubs={setSubs} recReasons={recReasons} openRecs={openRecs} recVenues={recVenues} recsReady={!!recQ.data} webOk={webOk} recMessage={recMessage} runId={runId} setRunId={setRunId} setLastSearch={setLastSearch} result={searchResult} setResult={setSearchResult} onGoSettings={() => setTab("settings")} onDone={() => setTab("results")} flash={flash} invalidate={invalidate} />}
-        {llm?.configured && activeProfile && tab === "results" && <ResultsTab profile={activeProfile} leads={leads} expansions={(data?.expansions ?? []).filter((x) => x.profileId === activeProfile.id)} llmConfigured={!!llm?.configured} channels={channels} subs={subs} sortByScore={sortByScore} setSortByScore={setSortByScore} lastSearch={lastSearch} setLastSearch={setLastSearch} setRunId={setRunId} flash={flash} invalidate={invalidate} />}
-        {llm?.configured && activeProfile && tab === "tracker" && <TrackerTab leads={leads} profile={activeProfile} followups={(data?.followups ?? []).filter((f) => f.profileId === activeProfile.id)} flash={flash} invalidate={invalidate} />}
-        {llm?.configured && activeProfile && tab === "cohort" && <CohortTab profile={activeProfile} leads={leads} invites={invites} events={events} feedback={feedback} summaries={summaries} llmConfigured={!!llm?.configured} posthog={data?.posthog.find((p) => p.profileId === activeProfile.id)} flash={flash} invalidate={invalidate} />}
-        {tab === "settings" && (
-          <div className="mt-5 space-y-6">
-            <AiTab llm={llm} flash={flash} invalidate={invalidate} />
-            <ChannelsTab connections={data?.connections ?? []} flash={flash} invalidate={invalidate} />
-          </div>
-        )}
+        {step === "aiconfig" && <AiTab llm={llm} flash={flash} invalidate={invalidate} onConfigured={() => go(activeProfile ? "channels" : "profile")} />}
+        {step === "profile" && <ProfileTab profiles={profiles} activeProfile={activeProfile} onSelect={(id) => setProfileId(id)} onDone={(id) => { if (id) { setProfileId(id); go("channels"); } invalidate(); }} llm={llm} flash={flash} invalidate={invalidate} />}
+        {llm?.configured && activeProfile && step === "channels" && <ChannelsStep profile={activeProfile} expansions={(data?.expansions ?? []).filter((x) => x.profileId === activeProfile.id)} llmConfigured={!!llm?.configured} connections={data?.connections ?? []} channels={channels} setChannels={(c) => { channelsTouched.current = true; setChannels(c); }} recReasons={recReasons} openRecs={openRecs} recVenues={recVenues} recsReady={!!recQ.data} webOk={webOk} recMessage={recMessage} flash={flash} invalidate={invalidate} />}
+        {llm?.configured && activeProfile && step === "threads" && <ThreadsStep profile={activeProfile} leads={leads} expansions={(data?.expansions ?? []).filter((x) => x.profileId === activeProfile.id)} llmConfigured={!!llm?.configured} channels={channels} subs={subs} setSubs={setSubs} sortByScore={sortByScore} setSortByScore={setSortByScore} lastSearch={lastSearch} setLastSearch={setLastSearch} runId={runId} setRunId={setRunId} result={searchResult} setResult={setSearchResult} onGoReplies={() => go("replies")} flash={flash} invalidate={invalidate} />}
+        {llm?.configured && activeProfile && step === "replies" && <RepliesStep leads={leads} llmConfigured={!!llm?.configured} onEmpty={() => go("threads")} invalidate={invalidate} />}
+        {llm?.configured && activeProfile && step === "tracker" && <TrackerTab leads={leads} profile={activeProfile} followups={(data?.followups ?? []).filter((f) => f.profileId === activeProfile.id)} flash={flash} invalidate={invalidate} />}
+        {llm?.configured && activeProfile && step === "cohort" && <CohortTab profile={activeProfile} leads={leads} invites={invites} events={events} feedback={feedback} summaries={summaries} llmConfigured={!!llm?.configured} posthog={data?.posthog.find((p) => p.profileId === activeProfile.id)} flash={flash} invalidate={invalidate} />}
+
+        {(() => {
+          const order = STEP_META.map((s) => s.id);
+          const idx = order.indexOf(step);
+          const prev = idx > 0 ? STEP_META[idx - 1] : null;
+          const next = idx < order.length - 1 ? STEP_META[idx + 1]! : null;
+          const nextBlocked = step === "profile" ? !activeProfile : step === "channels" ? channels.length === 0 : false;
+          const nextLabel = next ? (step === "channels" && channels.length ? `Continue to Threads with ${channels.length} channel${channels.length === 1 ? "" : "s"} →` : `Continue to ${next.label} →`) : "";
+          return (
+            <nav aria-label="Step navigation" className="mt-6 flex items-center justify-between gap-2">
+              {prev ? <button type="button" className={btnGhost} onClick={() => go(prev.id)}>← Back to {prev.label}</button> : <span />}
+              {next ? <button type="button" className={btnPrimary} disabled={nextBlocked} onClick={() => go(next.id)} title={nextBlocked ? (step === "profile" ? "Create or pick a profile first" : "Pick at least one channel to continue") : undefined}>{nextLabel}</button> : <span />}
+            </nav>
+          );
+        })()}
       </main>
     </div>
   );
@@ -295,7 +318,7 @@ function ProfileForm({ existing, onDone, onClose, onNew }: { existing?: Profile;
     const hidden = [existing.keywords && `keywords: ${existing.keywords}`, existing.workaround && `workaround: ${existing.workaround}`, existing.coreAction && `core action: ${existing.coreAction}`].filter(Boolean);
     return (
       <div className="mt-3 space-y-3 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-4">
-        <h2 className="font-serif text-lg font-bold">Target profile</h2>
+        <h2 className="font-display text-lg font-bold">Target profile</h2>
         <p className="text-sm"><span className="font-semibold">{existing.productName}</span> <span className="text-[var(--dim)]">— {existing.productDesc || "no description yet"}</span></p>
         <p className="text-sm text-[var(--dim)]">{existing.audience ? `${existing.audience}${existing.pain ? ` — ${existing.pain}` : ""}` : (existing.pain || "No audience set yet.")}</p>
         {hidden.length > 0 && <p className="text-xs text-[var(--dim)]">Also shaping this profile's hunt — {hidden.join(" · ")}</p>}
@@ -310,7 +333,7 @@ function ProfileForm({ existing, onDone, onClose, onNew }: { existing?: Profile;
   }
   return (
     <form className="mt-3 space-y-3 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-4" onSubmit={(e: FormEvent) => { e.preventDefault(); if (editing && existing) update.mutate(); else create.mutate(); }}>
-      <h2 className="font-serif text-lg font-bold">{existing ? "Edit profile" : "Target profile"}</h2>
+      <h2 className="font-display text-lg font-bold">{existing ? "Edit profile" : "Target profile"}</h2>
       <p className="text-sm text-[var(--dim)]">Three fields. This is the first step — everything else (AI config, search, synthesis) builds on this profile. Be narrow. “New parents whose baby wakes at 5am” finds people; “parents” finds nobody.</p>
       <div><label htmlFor="pf-name" className={labelCls}>Product name</label><input id="pf-name" aria-label="Product name" required value={f.productName} onChange={set("productName")} className={inputCls} placeholder="e.g. DawnFeed" /></div>
       <div><label htmlFor="pf-desc" className={labelCls}>What it does, in one line</label><input id="pf-desc" aria-label="What your product does" value={f.productDesc} onChange={set("productDesc")} className={inputCls} placeholder="e.g. Tracks night feeds and predicts the next wake window" /></div>
@@ -355,7 +378,7 @@ function PainLanguagePanel({ profile, configured, flash, invalidate }: { profile
   const exclusions = parseJsonArr(profile.exclusions);
   return (
     <div className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-4">
-      <h3 className="font-serif text-base font-bold">Pain language — from your description to their words</h3>
+      <h3 className="font-display text-base font-bold">Pain language — from your description to their words</h3>
       <p className="mt-1 text-sm text-[var(--dim)]">Your plain description (“{profile.pain.slice(0, 90)}{profile.pain.length > 90 ? "…" : ""}”) becomes the phrases real people type when they hit this pain, the workaround language that proves they're already hacking a solution, and exclusions that keep adjacent noise out of search. Runs by itself — the top phrases land in your keywords automatically.</p>
       {configured
         ? (painPhrases.length === 0 || expand.isPending
@@ -387,7 +410,7 @@ function FeedbackPanel({ profile, configured, feedback, summaries, flash, invali
   const setFbField = (k: keyof typeof fb) => (e: { target: { value: string } }) => setFb((v) => ({ ...v, [k]: e.target.value }));
   return (
     <div className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-4">
-      <h3 className="font-serif text-base font-bold">Feedback — summarised, never invented</h3>
+      <h3 className="font-display text-base font-bold">Feedback — summarised, never invented</h3>
       <p className="mt-1 text-sm text-[var(--dim)]">Paste what seed users actually said — call notes, messages, replies — word for word. The summary clusters it, shows where they got stuck and what they asked for, and quotes them exactly: any quote the model can't source from your text is dropped before you see it. It also drafts follow-up questions aimed at friction, not praise.</p>
       <form className="mt-3 space-y-2" onSubmit={(e: FormEvent) => { e.preventDefault(); addFb.mutate(); }}>
         <div className="grid grid-cols-2 gap-2">
@@ -462,8 +485,8 @@ function ProfileTab({ profiles, activeProfile, onSelect, onDone, llm, flash, inv
   );
 }
 
-/* Search is input only: pick channels, press the one big button, watch it
-   work. Matches appear on the Results tab, which opens automatically. */
+/* Channels is input only: run the hunt, keep the open ones, connect the
+   closed ones. Searching happens on the Threads step. */
 const CH_DESCRIPTOR: Record<string, string> = {
   bluesky: "public search", hackernews: "public search", github: "public search",
   stackexchange: "public Q&A", agingcare: "forum threads", mumsnet: "forum threads",
@@ -473,26 +496,34 @@ function descriptorFor(ch: string): string {
   return CH_DESCRIPTOR[ch] ?? (ch.startsWith("forum:") ? "forum threads" : "public search");
 }
 
-function SearchTab({ profile, expansions, llmConfigured, connections, channels, setChannels, subs, setSubs, recReasons, openRecs, recVenues, recsReady, webOk, recMessage, runId, setRunId, setLastSearch, result, setResult, onGoSettings, onDone, flash, invalidate }: {
+/* Channels is input only: run the hunt, keep the open ones, connect the
+   closed ones. Searching happens on the Threads step. */
+function ChannelsStep({ profile, expansions, llmConfigured, connections, channels, setChannels, recReasons, openRecs, recVenues, recsReady, webOk, recMessage, flash, invalidate }: {
   profile: Profile; expansions: State["expansions"]; llmConfigured: boolean; connections: State["connections"];
-  channels: string[]; setChannels: (c: string[] | ((v: string[]) => string[])) => void; subs: string; setSubs: (s: string) => void;
-  recReasons: Record<string, string>; openRecs: { channel: string; label: string; fit: string }[]; recVenues: { name: string; where: string; why: string; url: string }[]; recsReady: boolean; webOk: boolean; recMessage: string; runId: number; setRunId: (id: number) => void;
-  setLastSearch: (s: { found: number; created: number; synthesized: number } | null) => void;
-  result: string; setResult: (s: string) => void;
-  onGoSettings: () => void; onDone: () => void; flash: (m: string) => void; invalidate: () => void;
+  channels: string[]; setChannels: (c: string[] | ((v: string[]) => string[])) => void;
+  recReasons: Record<string, string>; openRecs: { channel: string; label: string; fit: string; verified: boolean }[]; recVenues: { name: string; where: string; why: string; url: string; src: string }[]; recsReady: boolean; webOk: boolean; recMessage: string;
+  flash: (m: string) => void; invalidate: () => void;
 }) {
+  const [showConn, setShowConn] = useState(false);
   const toggle = (c: string) => setChannels((v) => v.includes(c) ? v.filter((x) => x !== c) : [...v, c]);
-  // FirstFeedback HN retune: for this profile Hacker News is Ask HN-only —
-  // help-request posts, with Show HN showcases excluded server-side.
-  const isFirstFeedback = profile.productName.trim().toLowerCase() === "firstfeedback";
-  // Irrelevant channels are hidden, not displayed — one quiet line reveals
-  // them for override. Channels searchable right now:
-  const EXECUTABLE = new Set(["bluesky", "hackernews", "github", "stackexchange", "agingcare", "mumsnet", "makeuptalk", "lipstickalley", "eurobricks", "studentdoctor", "devto", "lobsters"]);
+  // Pills come only from Muse's plan (openRecs). "Where else they talk"
+  // shows every plan community that is NOT a displayed pill — never the
+  // other way around.
+  const displayedChannels = new Set([...openRecs.map((o) => o.channel), ...channels]);
 
-  // Search-run progress: the server records real phases per run; the latest
-  // run's plain-words summary is shown once it lands.
-  const runQ = useQuery({ queryKey: ["run", runId], queryFn: () => api.searchRunStatus({ runId }), enabled: runId > 0, refetchOnWindowFocus: false });
   const redditConnected = !!connections.find((c) => c.channel === "reddit_poc")?.connected;
+  // The hunt runs itself (plan auto-generates, recs auto-apply), and this
+  // button forces a fresh round on demand — plan first, then the lineup
+  // reconverges when the new plan round lands.
+  const [discoveryMsg, setDiscoveryMsg] = useState("");
+  const [huntRunId, setHuntRunId] = useState(0);
+  useEffect(() => setHuntRunId(0), [profile.id]);
+  const huntQ = useQuery({ queryKey: ["run", huntRunId], queryFn: () => api.searchRunStatus({ runId: huntRunId }), enabled: huntRunId > 0, refetchOnWindowFocus: false, refetchInterval: huntRunId > 0 ? 1500 : false });
+  const discover = useMutation({
+    mutationFn: () => api.generateExpansionPlan({ profileId: profile.id }),
+    onSuccess: (r) => { invalidate(); if (r.status === "ok") { setDiscoveryMsg(""); if (r.runId) setHuntRunId(r.runId); flash("Channel hunt updated — the lineup below reconverged on the newest plan."); } else setDiscoveryMsg(r.message); },
+    onError: () => setDiscoveryMsg("Channel hunt failed — check your connection and try again."),
+  });
   const latestExpansion = [...expansions].sort((a, b) => b.round - a.round)[0];
   const plan: ExpansionPlanData | null = latestExpansion ? parsePlan(latestExpansion.plan) : null;
   // Same usable-plan rule as the server: a round with no queries and no
@@ -503,7 +534,7 @@ function SearchTab({ profile, expansions, llmConfigured, connections, channels, 
   // Before recs land there are no pills — only the finding line below.
   // Nothing generic is ever assumed or reused across profiles.
   const lineup = openRecs.length
-    ? openRecs.map((r) => ({ channel: r.channel, label: `${r.label} · ${descriptorFor(r.channel)}`, fit: r.fit }))
+    ? openRecs.map((r) => ({ channel: r.channel, label: `${r.label} · ${descriptorFor(r.channel)}`, fit: r.fit, verified: r.verified }))
     : [];
   const shownOpts = lineup.filter((o) => o.fit !== "poor");
   // Show-your-work disclosure: open picks carry their full reasons, ruled-out
@@ -516,57 +547,45 @@ function SearchTab({ profile, expansions, llmConfigured, connections, channels, 
   // never as channels.
   const elseTalk = (() => {
     const seen = new Set<string>();
-    const out: { name: string; where: string; why: string; access: string; url?: string }[] = [];
+    const out: { name: string; where: string; why: string; access: string; url?: string; src: string }[] = [];
     for (const c of plan?.communities ?? []) {
-      if (!c.name || EXECUTABLE.has(c.channel) || channels.includes(c.channel)) continue;
+      const key = c.channel === "reddit" ? "reddit_poc" : c.channel;
+      if (!c.name || displayedChannels.has(key)) continue;
       const k = `${c.name} ${c.where || ""}`.toLowerCase();
       if (seen.has(k)) continue;
       seen.add(k);
-      out.push({ name: c.name, where: c.where || "", why: c.why || "", access: c.access || "" });
+      out.push({ name: c.name, where: c.where || "", why: c.why || "", access: c.access || "", src: "plan" });
     }
     for (const v of recVenues) {
       const k = `${v.name} ${v.where}`.toLowerCase();
       if (seen.has(k)) continue;
       seen.add(k);
-      out.push({ name: v.name, where: v.where, why: v.why, access: "manual", url: v.url });
+      out.push({ name: v.name, where: v.where, why: v.why, access: "manual", url: v.url, src: v.src });
     }
     return out;
   })();
-  const genPlan = useMutation({
-    mutationFn: () => api.generateExpansionPlan({ profileId: profile.id }),
-    onSuccess: (r) => { invalidate(); setResult(r.message); if (r.status === "ok") flash("Expansion plan saved — it will drive the next search."); },
-    onError: () => setResult("Expansion plan failed — try again."),
-  });
-  // Manual plan buttons only — auto-generation lives in App so the plan
-  // starts when the profile is provided, not on first Search visit.
-  // Picks sharpen when the plan lands.
-  const search = useMutation({
-    mutationFn: () => api.searchLiveLeads({ profileId: profile.id, channels, subreddits: subs }),
-    onSuccess: (r) => {
-      invalidate();
-      setRunId(r.runId);
-      setLastSearch({ found: r.found, created: r.created, synthesized: r.synthesized });
-      setResult(describeSearch(r, false, isFirstFeedback));
-      if (r.synthesized) flash(`Search + synthesis done — ${r.synthesized} synthesized results on the Results tab, each with its Muse verdict and evidence quote.`);
-      else if (r.pruned) flash("Search done — old unclassified leads with no domain anchor were cleared from your queue.");
-      onDone();
-    },
-    onError: () => setResult("Search failed — check your connection and try again."),
-  });
-
+  // One manual trigger only (Re-expand in the receipt below reuses `discover`).
+  // Auto-generation lives in App so the plan starts when the profile is
+  // provided, not on first Search visit.
   const foundExtra = openRecs.filter((o) => o.channel.startsWith("forum:")).length + recVenues.length;
   return (
     <section className="mt-5 space-y-4">
       <div className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-4">
-        <h2 className="font-serif text-lg font-bold">Discover your channels</h2>
-        <p className="mt-1 text-sm text-[var(--dim)]">Automatic — every profile gets its own channel hunt first. Your profile signals, a live web search for real discussion threads, and Muse's expansion plan each vote on where your people talk. No two profiles search the same places. Edit the profile and the hunt restarts by itself.</p>
+        <h2 className="font-display text-lg font-bold">Discover your channels</h2>
+        <p className="mt-1 text-sm text-[var(--dim)]">Muse names where your people talk and a live web search verifies the picks — fresh for every profile, nothing reused. It runs by itself; the button forces a fresh round.</p>
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <button type="button" className={btnGhost} disabled={!llmConfigured || discover.isPending} onClick={() => discover.mutate()}>{discover.isPending ? "Hunting…" : (planUsable || expansions.length ? "Re-run channel hunt" : "Run channel hunt")}</button>
+        </div>
+        {discover.isPending && <p role="status" className="mt-2 text-sm text-[var(--dim)]">Round {expansions.length + 1} — asking Muse for anchored queries…</p>}
+        {!discover.isPending && huntRunId > 0 && huntQ.data && <p role="status" className="mt-2 text-sm text-[var(--dim)]">{huntQ.data.detail}</p>}
+        {discoveryMsg && <p role="status" className="mt-2 text-sm">{discoveryMsg}</p>}
         <ol className="mt-3 space-y-1.5 text-sm">
           <li><span className="font-semibold">✓ Target locked</span> <span className="text-[var(--dim)]">— {profile.productName}: {profile.productDesc || "no description yet"}</span></li>
           <li>{recsReady ? (
             webOk ? (
-              <><span className="font-semibold">✓ Web search</span> <span className="text-[var(--dim)]">— {foundExtra ? `found ${foundExtra} extra place${foundExtra === 1 ? "" : "s"} for this profile beyond the defaults` : "checked the web — the defaults already cover this topic"}</span></>
+              <><span className="font-semibold">✓ Web search</span> <span className="text-[var(--dim)]">— {foundExtra ? `verified ${foundExtra} extra place${foundExtra === 1 ? "" : "s"} for this profile beyond the plan's picks` : "checked the web — the plan's picks already cover this topic"}</span></>
             ) : (
-              <><span className="font-semibold">! Web search</span> <span className="text-[var(--dim)]">— the web check was throttled, so this lineup is profile-signals only. <button type="button" className="underline" onClick={() => invalidate()}>Re-check the web</button></span></>
+              <><span className="font-semibold">! Web search</span> <span className="text-[var(--dim)]">— the web check was throttled, so this lineup is Muse's plan only — no search-engine evidence. <button type="button" className="underline" onClick={() => invalidate()}>Re-check the web</button></span></>
             )
           ) : (
             <><span className="font-semibold">… Web search</span> <span className="text-[var(--dim)]">— searching the web for discussion threads about this pain…</span></>
@@ -576,13 +595,13 @@ function SearchTab({ profile, expansions, llmConfigured, connections, channels, 
           ) : plan && latestExpansion ? (
             <><span className="font-semibold">! Muse plan</span> <span className="text-[var(--dim)]">— round {latestExpansion.round} came back empty — tap Re-expand for sharper picks</span></>
           ) : (
-            <><span className="font-semibold">… Muse plan</span> <span className="text-[var(--dim)]">— {genPlan.isPending ? "Muse is mapping where else they talk…" : "runs automatically for every profile — it should land any second; Re-expand below forces another round"}</span></>
+            <><span className="font-semibold">… Muse plan</span> <span className="text-[var(--dim)]">— mapping automatically, it lands on its own</span></>
           )}</li>
         </ol>
       </div>
       <div className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-4">
-        <h2 className="font-serif text-lg font-bold">Search</h2>
-        <p className="mt-1 text-sm text-[var(--dim)]">Pick the channels, press the button. Search runs on demand across the <strong className="text-[var(--text)]">open channels</strong> — public, searchable, no API needed — then Muse synthesizes every candidate with a verdict, evidence quote and confidence. The matches land on the <strong className="text-[var(--text)]">Results tab</strong>, which opens by itself.</p>
+        <h2 className="font-display text-lg font-bold">Open channels — searched by default</h2>
+        <p className="mt-1 text-sm text-[var(--dim)]">These are public and searchable — no API needed — and Muse picked them for this profile, not reused from another. Toggle freely: the Threads step searches exactly the ones left on. Closed channels live below: provide the API or connection and they join the search.</p>
         <fieldset className="mt-3">
           <legend className={labelCls}>Open channels — picked for this profile, toggle freely</legend>
           {!recsReady && shownOpts.length === 0 && (
@@ -592,6 +611,7 @@ function SearchTab({ profile, expansions, llmConfigured, connections, channels, 
             {shownOpts.map((o) => (
               <label key={o.channel} title={recReasons[o.channel] ?? o.label} className={`flex cursor-pointer items-center gap-2 rounded-full border px-3 py-1.5 text-sm ${channels.includes(o.channel) ? "border-[var(--accent)] bg-[var(--accent-bg)] font-semibold" : "border-[var(--border)]"}`}>
                 <input type="checkbox" aria-label={o.label} checked={channels.includes(o.channel)} onChange={() => toggle(o.channel)} />{o.label}
+                <span className="text-xs font-normal text-[var(--dim)]" title={o.verified ? "The live web check saw real threads on this channel" : "From Muse's plan — the web check hasn't confirmed this channel yet"}>{o.verified ? "· live" : "· plan"}</span>
                 {NEW_CHANNELS.has(o.channel) && <span className="rounded-full bg-[var(--accent)] px-1.5 py-0.5 text-[10px] font-bold text-[var(--accent-text)]">New</span>}
               </label>
             ))}
@@ -602,7 +622,7 @@ function SearchTab({ profile, expansions, llmConfigured, connections, channels, 
           <button type="button" className={btnGhost} aria-expanded={showWhy} onClick={() => setShowWhy((v) => !v)}>{showWhy ? "Hide how this lineup was picked" : "How this lineup was picked"}</button>
           {showWhy && (
             <div className="mt-2 space-y-2 text-sm">
-              <p className="text-[var(--dim)]">Fresh hunt for this profile, recounted on every visit — your words voted{planUsable ? ", Muse's plan voted" : ", no usable plan yet"} {webOk ? "and the web check voted." : "but the web check was throttled, so web evidence is missing."}</p>
+              <p className="text-[var(--dim)]">Fresh hunt for this profile, recounted on every visit — Muse's plan picked the channels{planUsable ? "" : " (no usable plan yet — run the hunt above)"}{webOk ? ", and the web check verified them against real threads." : ", but the web check was throttled, so no search-engine evidence."}</p>
               {picked.length > 0 && (
                 <ul className="space-y-1.5">
                   {picked.map((o) => (
@@ -625,22 +645,20 @@ function SearchTab({ profile, expansions, llmConfigured, connections, channels, 
         </div>
         {elseTalk.length > 0 && (
           <div className="mt-3 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface-alt)] p-3">
-            <h3 className="font-serif text-base font-bold">Where else they talk</h3>
-            <p className="mt-1 text-sm text-[var(--dim)]">Muse's plan and the web search found these places for this profile. EarlyProof can't search them — no public API — so join them yourself. Anyone promising goes in by hand on the Results tab, and Muse synthesizes them like the rest.</p>
+            <h3 className="font-display text-base font-bold">Where else they talk</h3>
+            <p className="mt-1 text-sm text-[var(--dim)]">Muse's plan and the web search found these places for this profile. EarlyProof can't search them — no public API — so join them yourself. Anyone promising goes in by hand on the Threads step, and Muse synthesizes them like the rest.</p>
             <ul className="mt-2 space-y-1.5 text-sm">
               {elseTalk.map((c, i) => (
                 <li key={i} className="rounded-[var(--radius)] bg-[var(--surface)] px-2.5 py-1.5">
                   <span className="font-medium">{c.name}</span>{c.where && <span className="text-[var(--dim)]"> · {c.where}</span>}
                   <span className="ml-2 rounded-full bg-[var(--amber-bg)] px-2 py-0.5 text-[11px] font-semibold text-[var(--amber)]">{c.access === "closed" ? "Closed — you join & send" : "Not searched — add by hand"}</span>
+                  <span className="ml-2 text-[11px] text-[var(--dim)]" title={c.src === "web" ? "The live web check found threads here" : "Named in Muse's plan — the web check hasn't confirmed it yet"}>{c.src === "web" ? "· found on the web" : "· Muse's plan"}</span>
                   {c.url && <a className="ml-2 text-xs font-semibold text-[var(--accent)] underline" href={c.url} target="_blank" rel="noreferrer">Join →</a>}
                   {c.why && <span className="mt-0.5 block text-[var(--dim)]">{c.why}</span>}
                 </li>
               ))}
             </ul>
           </div>
-        )}
-        {isFirstFeedback && (
-          <p className="mt-3 rounded-[var(--radius)] bg-[var(--accent-bg)] p-2 text-sm"><strong>Hacker News for FirstFeedback is Ask HN-only.</strong> HN is searched with help-request phrasing — “how did you get your first users”, “launched to crickets”, “no traction”, “need feedback on my project” — and only posts whose title starts with <strong>“Ask HN”</strong> count as candidates. <strong>“Show HN” showcases are excluded</strong> before the pre-filter: earlier runs were dominated by Show HN announcements, which are people launching, not people asking for help finding first users. Bluesky and GitHub search exactly as before.</p>
         )}
         <fieldset className="mt-3">
           <legend className={labelCls}>Closed channels — only with your API / connection</legend>
@@ -653,88 +671,76 @@ function SearchTab({ profile, expansions, llmConfigured, connections, channels, 
             ) : (
               <span className="rounded-full border border-dashed border-[var(--border)] px-3 py-1.5 text-sm text-[var(--dim)]">Reddit POC · not connected</span>
             )}
-            <button type="button" className={btnGhost} onClick={onGoSettings}>{redditConnected ? "Manage closed-channel connections" : "Provide API / connect a closed channel"}</button>
+            <button type="button" className={btnGhost} aria-expanded={showConn} onClick={() => setShowConn((v) => !v)}>{showConn ? "Hide connection forms" : redditConnected ? "Manage closed-channel connections" : "Provide API / connect a closed channel"}</button>
+          {showConn && (
+            <div className="mt-3">
+              <ChannelsTab connections={connections} flash={flash} invalidate={invalidate} />
+            </div>
+          )}
           </div>
           <p className="mt-2 text-xs text-[var(--dim)]">Also closed: Facebook Groups, Discord, Slack, LinkedIn DMs, Instagram DMs, and X / Reddit beyond the POC. There's no outside search API for those — provide a connection where one exists in Channels, or add a person you found there by hand below and EarlyProof will draft for them; you join and send yourself.</p>
         </fieldset>
         {channels.includes("reddit_poc") && (
-          <div className="mt-3">
-            <label htmlFor="subs" className={labelCls}>Subreddits for POC search (max 5, comma separated)</label>
-            <input id="subs" aria-label="Subreddits for Reddit POC search" value={subs} onChange={(e) => setSubs(e.target.value)} className={inputCls} placeholder="e.g. NewParents, beyondthebump" />
-            <p className="mt-1 rounded-[var(--radius)] bg-[var(--amber-bg)] p-2 text-xs text-[var(--amber)]"><strong>POC only:</strong> Reddit search here uses the free non-commercial tier with your own OAuth, on demand for internal validation. A commercial launch needs a separate Reddit commercial agreement. Connect the POC in Channels first.</p>
-          </div>
+          <p className="mt-3 rounded-[var(--radius)] bg-[var(--amber-bg)] p-2 text-xs text-[var(--amber)]"><strong>POC only:</strong> Reddit search here uses the free non-commercial tier with your own OAuth, on demand for internal validation. A commercial launch needs a separate Reddit commercial agreement. You pick the subreddits on the Threads step, right before searching.</p>
         )}
-        <div className="mt-4 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface-alt)] p-3">
-          <div className="flex flex-wrap items-center gap-2">
-            <h3 className="font-serif text-base font-bold">Where Muse will look — expansion plan</h3>
-            {plan && latestExpansion && <span className="rounded-full bg-[var(--accent-bg)] px-2 py-0.5 text-xs font-semibold text-[var(--accent)]">Round {latestExpansion.round} · anchor: “{plan.anchorTerm}”</span>}
-          </div>
-          <p className="mt-1 text-sm text-[var(--dim)]">Muse builds this from your profile's audience, pain, workaround and product: query variants in the person's own language, related pain phrases and adjacent problems, and the communities where those people already talk — each mapped to the open or closed channel that reaches it. <strong className="text-[var(--text)]">Every expanded query must contain the domain anchor</strong> (for this profile, a real “{plan?.anchorTerm || "domain"}” term) — generic words alone never become a query, so expansion can't bring back off-topic matches.{plan && plan.droppedUnanchored > 0 ? ` ${plan.droppedUnanchored} unanchored suggestion${plan.droppedUnanchored === 1 ? " was" : "s were"} dropped for exactly that reason.` : ""}</p>
-          {!plan && (
-            <div className="mt-2">
-              <p className="text-sm text-[var(--dim)]">No plan yet — Muse generates round 1 automatically when you search, or generate it now to read where it wants to look first.</p>
-              <button type="button" className={btnPrimary + " mt-2"} disabled={!llmConfigured || genPlan.isPending} onClick={() => genPlan.mutate()}>{genPlan.isPending ? "Planning…" : "Generate expansion plan with Muse"}</button>
-            </div>
-          )}
-          {plan && (
-            <div className="mt-2 space-y-3 text-sm">
-              <div>
-                <p className="font-semibold">Expanded queries the search will run</p>
-                <ul className="mt-1 space-y-1">
-                  {plan.queries.map((q, i) => <li key={i} className="rounded-[var(--radius)] bg-[var(--surface)] px-2.5 py-1.5"><span className="font-medium">“{q.query}”</span>{q.intent && <span className="text-[var(--dim)]"> — {q.intent}</span>}</li>)}
-                </ul>
-              </div>
-              {plan.painPhrases.length > 0 && <div><p className="font-semibold">Related pain phrases & adjacent problems</p><div className="mt-1 flex flex-wrap gap-1.5">{[...plan.painPhrases, ...plan.adjacentProblems].map((x, i) => <span key={i} className="rounded-full bg-[var(--surface)] px-2.5 py-1 text-xs font-medium">“{x}”</span>)}</div></div>}
-              {plan.adjacentAudiences.length > 0 && <div><p className="font-semibold">Adjacent audiences (one step wider, same anchor)</p><div className="mt-1 flex flex-wrap gap-1.5">{plan.adjacentAudiences.map((x, i) => <span key={i} className="rounded-full bg-[var(--surface)] px-2.5 py-1 text-xs font-medium">{x}</span>)}</div></div>}
-              {plan.communities.length > 0 && (
-                <div>
-                  <p className="font-semibold">Communities & places — and the channel that reaches each</p>
-                  <ul className="mt-1 space-y-1.5">
-                    {plan.communities.map((c, i) => (
-                      <li key={i} className="rounded-[var(--radius)] bg-[var(--surface)] px-2.5 py-1.5">
-                        <span className="font-medium">{c.name}</span>{c.where && <span className="text-[var(--dim)]"> · {c.where}</span>}
-                        <span className={`ml-2 rounded-full px-2 py-0.5 text-[11px] font-semibold ${c.access === "closed" ? "bg-[var(--amber-bg)] text-[var(--amber)]" : "bg-[var(--accent-bg)] text-[var(--accent)]"}`}>{c.access === "closed" ? "Closed — provide API / join & send" : "Open — searched by default"} · {CHANNEL_LABEL[c.channel] ?? c.channel}</span>
-                        {c.why && <span className="mt-0.5 block text-[var(--dim)]">{c.why}</span>}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-              {plan.relaxations.length > 0 && <div><p className="font-semibold">Over-strict terms Muse could relax (anchor stays)</p><ul className="mt-1 list-disc space-y-0.5 pl-5 text-[var(--dim)]">{plan.relaxations.map((x, i) => <li key={i}>{x}</li>)}</ul></div>}
-              <button type="button" className={btnGhost} disabled={!llmConfigured || genPlan.isPending} onClick={() => genPlan.mutate()}>{genPlan.isPending ? "Planning…" : "Generate a broader plan (next round)"}</button>
-            </div>
-          )}
-        </div>
-        <div className="mt-4">
-          <button type="button" aria-label="Search for seed users" className={btnPrimary + " w-full py-3 text-base"} disabled={!channels.length || search.isPending || !llmConfigured} onClick={() => search.mutate()}>{search.isPending ? "Searching, then synthesizing with Muse…" : `Search ${channels.length} channel${channels.length === 1 ? "" : "s"} for seed users`}</button>
-          <p className="mt-1 text-xs text-[var(--dim)]">Results open automatically on the Results tab when the search finishes.</p>
-        </div>
-        {runQ.data && runId > 0 && <p role="status" className="mt-2 rounded-[var(--radius)] bg-[var(--accent-bg)] p-2 text-sm font-medium">{runQ.data.detail}</p>}
-        {result && <p role="status" className="mt-2 text-sm">{result}</p>}
+        {!planUsable && (
+          <p className="mt-3 text-sm text-[var(--dim)]">{llmConfigured ? "Muse maps where they talk automatically — the Threads step shows what it will run." : "Connect your Muse key in step 0 and Muse maps where they talk automatically."}</p>
+        )}
+        {!channels.length && <p className="mt-3 text-sm text-[var(--dim)]">Pick at least one channel above — the search runs across exactly the ones left on.</p>}
       </div>
 
     </section>
   );
 }
 
-/* Results is output only: what the last search found, after Muse synthesis.
-   This tab never starts a search — searching happens on the Search tab. */
-function ResultsTab({ profile, leads, expansions, llmConfigured, channels, subs, sortByScore, setSortByScore, lastSearch, setLastSearch, setRunId, flash, invalidate }: {
+/* Threads runs the search and shows what it found, after Muse synthesis.
+   Drafting lives one step over in Replies — each step only its own content. */
+function ThreadsStep({ profile, leads, expansions, llmConfigured, channels, subs, setSubs, sortByScore, setSortByScore, lastSearch, setLastSearch, runId, setRunId, result, setResult, onGoReplies, flash, invalidate }: {
   profile: Profile; leads: Lead[]; expansions: State["expansions"]; llmConfigured: boolean;
-  channels: string[]; subs: string; sortByScore: boolean; setSortByScore: (v: boolean) => void;
+  channels: string[]; subs: string; setSubs: (s: string) => void; sortByScore: boolean; setSortByScore: (v: boolean) => void;
   lastSearch: { found: number; created: number; synthesized: number } | null;
   setLastSearch: (s: { found: number; created: number; synthesized: number } | null) => void;
-  setRunId: (id: number) => void; flash: (m: string) => void; invalidate: () => void;
+  runId: number; setRunId: (id: number) => void; result: string; setResult: (s: string) => void;
+  onGoReplies: () => void; flash: (m: string) => void; invalidate: () => void;
 }) {
+  // Search-run progress: the server records real phases per run; the latest
+  // run's plain-words summary is shown once it lands.
+  const runQ = useQuery({ queryKey: ["run", runId], queryFn: () => api.searchRunStatus({ runId }), enabled: runId > 0, refetchOnWindowFocus: false });
+  const search = useMutation({
+    mutationFn: () => api.searchLiveLeads({ profileId: profile.id, channels, subreddits: subs }),
+    onSuccess: (r) => {
+      invalidate();
+      setRunId(r.runId);
+      setLastSearch({ found: r.found, created: r.created, synthesized: r.synthesized });
+      setResult(describeSearch(r, false));
+      if (r.synthesized) flash(`Search + synthesis done — ${r.synthesized} synthesized threads below, each with its Muse verdict and evidence quote. Draft the good ones and they land in Replies.`);
+      else if (r.pruned) flash("Search done — old unclassified leads with no domain anchor were cleared from your queue.");
+    },
+    onError: () => setResult("Search failed — check your connection and try again."),
+  });
   const latestExpansion = [...expansions].sort((a, b) => b.round - a.round)[0];
   const plan: ExpansionPlanData | null = latestExpansion ? parsePlan(latestExpansion.plan) : null;
+  const planUsable = !!plan && (plan.queries.length > 0 || plan.communities.length > 0);
   const queue = leads.filter((l) => ["new", "drafted", "approved"].includes(l.status));
   // Only synthesized (Muse-classified) leads are shown as results. Raw,
   // unclassified candidates are never presented as final results — they sit
   // in the awaiting-synthesis count until Muse has synthesized them.
   const synthesized = queue.filter((l) => !!l.llmCategory);
   const awaitingSynthesis = queue.filter((l) => !l.llmCategory);
-  const sorted = [...synthesized].sort((a, b) => sortByScore ? b.matchScore - a.matchScore : b.id - a.id);
+  // Verdict-first ordering: Muse's judgement outranks the keyword counter —
+  // likely seed users, then the curious, then anything held for review. The
+  // keyword score only orders within the same verdict, never above it.
+  const verdictRank = (l: { llmCategory: string }) => l.llmCategory === "seed_user" ? 0 : l.llmCategory === "curious" ? 1 : 2;
+  // Tiebreak prefers meaning over words: a Muse semantic score outranks the
+  // keyword score whenever the hunt scored one; unscored leads keep theirs.
+  const effScore = (l: Lead) => (l.semanticScore >= 0 ? l.semanticScore : l.matchScore);
+  const byScore = [...synthesized].sort((a, b) => sortByScore ? (verdictRank(a) - verdictRank(b) || effScore(b) - effScore(a)) : b.id - a.id);
+  // Confident rejections collapse into an auditable count instead of full
+  // cards — a sure "irrelevant" is not queue content. Unsure holds (low
+  // confidence) stay visible so the founder can still correct Muse.
+  const ruledOut = byScore.filter((l) => l.llmCategory === "irrelevant" && l.llmConfidence >= 60 && !l.llmReviewed);
+  const sorted = byScore.filter((l) => !ruledOut.includes(l));
+  const [showRuledOut, setShowRuledOut] = useState(false);
   const [classifyResult, setClassifyResult] = useState("");
   const classify = useMutation({
     mutationFn: () => api.classifyLeads({ profileId: profile.id }),
@@ -752,15 +758,54 @@ function ResultsTab({ profile, leads, expansions, llmConfigured, channels, subs,
     },
     onError: () => flash("Expanded search failed — check your connection and try again."),
   });
+  const reexpand = useMutation({
+    mutationFn: () => api.generateExpansionPlan({ profileId: profile.id }),
+    onSuccess: (r) => { invalidate(); if (r.status !== "ok") flash(r.message); },
+    onError: () => flash("Re-expand failed — try again."),
+  });
   return (
-    <section className="mt-5 space-y-4" aria-label="Synthesized results">
-      {lastSearch && <p className="text-sm text-[var(--dim)]" role="status">Last search: {lastSearch.found} candidates found, {lastSearch.created} new, {lastSearch.synthesized} synthesized.</p>}
+    <section className="mt-5 space-y-4" aria-label="Search threads">
       <div className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-4">
-        <h3 className="font-serif text-base font-bold">How Muse synthesis works</h3>
+        <h3 className="font-display text-base font-bold">Search {channels.length > 0 ? `${channels.length} open channel${channels.length === 1 ? "" : "s"}` : "your channels"}</h3>
+        <p className="mt-1 text-sm text-[var(--dim)]">Runs across the open channels from the Channels step — then Muse synthesizes every candidate with a verdict, evidence quote and confidence before anything is shown.</p>
+        {planUsable && plan && latestExpansion && (
+          <div className="mt-3 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface-alt)] p-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <h4 className="font-display text-sm font-bold">What the search will run</h4>
+              <span className="rounded-full bg-[var(--accent-bg)] px-2 py-0.5 text-xs font-semibold text-[var(--accent)]">Round {latestExpansion.round} · anchor: “{plan.anchorTerm}”</span>
+              <button type="button" className={btnGhost} disabled={!llmConfigured || reexpand.isPending} onClick={() => reexpand.mutate()}>{reexpand.isPending ? "Hunting…" : "Re-expand"}</button>
+            </div>
+            <ul className="mt-2 space-y-1 text-sm">
+              {plan.queries.map((q, i) => <li key={i} className="rounded-[var(--radius)] bg-[var(--surface)] px-2.5 py-1.5"><span className="font-medium">“{q.query}”</span>{q.intent && <span className="text-[var(--dim)]"> — {q.intent}</span>}</li>)}
+            </ul>
+            {plan.droppedUnanchored > 0 && <p className="mt-2 text-xs text-[var(--dim)]">{plan.droppedUnanchored} unanchored suggestion{plan.droppedUnanchored === 1 ? " was" : "s were"} dropped — every query must contain the anchor.</p>}
+          </div>
+        )}
+        {!planUsable && (
+          <p className="mt-3 text-sm text-[var(--dim)]">{llmConfigured ? "Muse maps where they talk automatically — the first search builds the plan if needed." : "Connect your Muse key in step 0 and Muse maps where they talk automatically."}</p>
+        )}
+        {channels.includes("reddit_poc") && (
+          <div className="mt-3">
+            <label htmlFor="subs" className={labelCls}>Subreddits for POC search (max 5, comma separated)</label>
+            <input id="subs" aria-label="Subreddits for Reddit POC search" value={subs} onChange={(e) => setSubs(e.target.value)} className={inputCls} placeholder="e.g. NewParents, beyondthebump" />
+          </div>
+        )}
+        {channels.includes("hackernews") && (
+          <p className="mt-3 rounded-[var(--radius)] bg-[var(--accent-bg)] p-2 text-sm"><strong>Hacker News is Ask HN-only.</strong> Only posts whose title starts with <strong>“Ask HN”</strong> count — <strong>“Show HN” showcases are excluded</strong> before the pre-filter, for every profile alike.</p>
+        )}
+        <button type="button" aria-label="Search for seed users" className={btnPrimary + " mt-3 w-full py-3 text-base"} disabled={!channels.length || search.isPending || !llmConfigured} onClick={() => search.mutate()}>{search.isPending ? "Searching, then synthesizing with Muse…" : channels.length ? `Search ${channels.length} channel${channels.length === 1 ? "" : "s"} for seed users` : "Pick channels on the Channels step first"}</button>
+        {runQ.data && runId > 0 && <p role="status" className="mt-2 rounded-[var(--radius)] bg-[var(--accent-bg)] p-2 text-sm font-medium">{runQ.data.detail}</p>}
+        {result && <p role="status" className="mt-2 text-sm">{result}</p>}
+        {lastSearch && <p className="mt-2 text-xs text-[var(--dim)]" role="status">Last search: {lastSearch.found} candidates found, {lastSearch.created} new, {lastSearch.synthesized} synthesized.</p>}
+      </div>
+      <div className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-4">
+        <details>
+          <summary className="cursor-pointer font-display text-base font-bold">How Muse synthesis works</summary>
+          <p className="mt-1 text-sm text-[var(--dim)]">Every search ends with this step before anything is shown: your small Muse model reads each candidate in batches and synthesizes it with evidence — right person? real pain in their own words? already hacking a workaround or paying? It sorts each into likely seed user, curious clicker, or irrelevant, with a verbatim quote from the post and a confidence level. <strong className="text-[var(--text)]">Raw, unclassified keyword hits are never shown as final results.</strong> An unclassified lead also can't get a draft, can't be approved, and can't move into your tracker. Anything under 60% confidence, and anything called irrelevant, is held for your review and cannot go to outreach until you clear it. Synthesis is cached, so re-running only pays for new or changed candidates. Only the post text is sent — nothing else about the person.</p>
+        </details>
         {llmConfigured ? (
           <>
-            <p className="mt-1 text-sm text-[var(--dim)]">Every search ends with this step before anything is shown: your small Muse model reads each candidate in batches and synthesizes it with evidence — right person? real pain in their own words? already hacking a workaround or paying? It sorts each into likely seed user, curious clicker, or irrelevant, with a verbatim quote from the post and a confidence level. <strong className="text-[var(--text)]">Raw, unclassified keyword hits are never shown as final results.</strong> An unclassified lead also can't get a draft, can't be approved, and can't move into your tracker. Anything under 60% confidence, and anything called irrelevant, is held for your review and cannot go to outreach until you clear it. Synthesis is cached, so re-running only pays for new or changed candidates. Only the post text is sent — nothing else about the person.</p>
-            {awaitingSynthesis.length > 0 && <p className="mt-2 rounded-[var(--radius)] bg-[var(--amber-bg)] p-2 text-sm text-[var(--amber)]"><strong>{awaitingSynthesis.length} candidate{awaitingSynthesis.length === 1 ? "" : "s"} awaiting synthesis</strong> — added by hand or left over from an interrupted synthesis. They're hidden from the results below until Muse synthesizes them.</p>}
+            {awaitingSynthesis.length > 0 && <p className="mt-2 rounded-[var(--radius)] bg-[var(--amber-bg)] p-2 text-sm text-[var(--amber)]"><strong>{awaitingSynthesis.length} candidate{awaitingSynthesis.length === 1 ? "" : "s"} awaiting synthesis</strong> — added by hand or left over from an interrupted synthesis. They're hidden from the threads below until Muse synthesizes them.</p>}
             <button type="button" className={btnPrimary + " mt-2"} disabled={classify.isPending} onClick={() => classify.mutate()}>{classify.isPending ? "Synthesizing…" : awaitingSynthesis.length ? `Synthesize ${awaitingSynthesis.length} waiting candidate${awaitingSynthesis.length === 1 ? "" : "s"} with Muse` : "Re-run Muse synthesis"}</button>
           </>
         ) : (
@@ -773,7 +818,7 @@ function ResultsTab({ profile, leads, expansions, llmConfigured, channels, subs,
 
       {lastSearch && lastSearch.synthesized === 0 && sorted.length === 0 && (
         <div className="rounded-[var(--radius)] border-2 border-[var(--amber)] bg-[var(--surface)] p-4" role="status" aria-label="No synthesized results — expansion suggestions">
-          <h3 className="font-serif text-base font-bold">0 synthesized results — not a dead end</h3>
+          <h3 className="font-display text-base font-bold">0 synthesized results — not a dead end</h3>
           <p className="mt-1 text-sm text-[var(--dim)]">That search found {lastSearch.found} candidate{lastSearch.found === 1 ? "" : "s"}, but none passed the light pre-filter (domain anchor + a pain or workaround signal, with top anchored candidates passed up) and Muse synthesis as a real match for this profile. Rather than an empty list, here is where Muse suggests looking next — every suggestion stays anchored to “{plan?.anchorTerm || "your domain"}”, so widening never means generic.</p>
           {plan && plan.nextSuggestions.length > 0 && (
             <div className="mt-2 text-sm">
@@ -793,13 +838,23 @@ function ResultsTab({ profile, leads, expansions, llmConfigured, channels, subs,
       )}
 
       <div className="flex flex-wrap items-center gap-2">
-        <h3 className="font-serif text-base font-bold">Results ({sorted.length})</h3>
-        <label className="ml-auto flex items-center gap-2 text-sm"><input type="checkbox" aria-label="Sort results by match score" checked={sortByScore} onChange={(e) => setSortByScore(e.target.checked)} /> Strongest match first</label>
+        <h3 className="font-display text-base font-bold">Threads ({sorted.length})</h3>
+        <label className="ml-auto flex items-center gap-2 text-sm"><input type="checkbox" aria-label="Sort threads by verdict, then match score" checked={sortByScore} onChange={(e) => setSortByScore(e.target.checked)} /> Best verdicts first</label>
       </div>
-      {!sorted.length && !(lastSearch && lastSearch.synthesized === 0) && <p className="rounded-[var(--radius)] border border-dashed border-[var(--border)] p-4 text-sm text-[var(--dim)]">No synthesized results yet. Run a search on the Search tab — candidates come back only after Muse synthesis, each with a verdict, an evidence quote and a confidence level. Or add a person you found yourself below, then synthesize them.</p>}
+      {!sorted.length && !ruledOut.length && !(lastSearch && lastSearch.synthesized === 0) && <p className="rounded-[var(--radius)] border border-dashed border-[var(--border)] p-4 text-sm text-[var(--dim)]">No synthesized threads yet — run the search above. Candidates come back only after Muse synthesis, each with a verdict, an evidence quote and a confidence level. Or add a person you found yourself below, then synthesize them.</p>}
       <div className="space-y-3">
-        {sorted.map((l) => <LeadCard key={l.id} lead={l} llmConfigured={llmConfigured} invalidate={invalidate} />)}
+        {sorted.map((l) => <ThreadCard key={l.id} lead={l} onDrafted={onGoReplies} invalidate={invalidate} />)}
       </div>
+      {ruledOut.length > 0 && (
+        <div className="mt-3">
+          <button type="button" className={btnGhost} aria-expanded={showRuledOut} onClick={() => setShowRuledOut((v) => !v)}>{showRuledOut ? "Hide ruled-out threads" : `Ruled out by Muse (${ruledOut.length}) — audit`}</button>
+          {showRuledOut && (
+            <div className="mt-2 space-y-3">
+              {ruledOut.map((l) => <ThreadCard key={l.id} lead={l} onDrafted={onGoReplies} invalidate={invalidate} />)}
+            </div>
+          )}
+        </div>
+      )}
     </section>
   );
 }
@@ -807,12 +862,12 @@ function ResultsTab({ profile, leads, expansions, llmConfigured, channels, subs,
 function AddLeadForm({ profile, invalidate, flash }: { profile: Profile; invalidate: () => void; flash: (m: string) => void }) {
   const [open, setOpen] = useState(false);
   const [f, setF] = useState({ channel: "reddit", externalUrl: "", author: "", community: "", title: "", body: "" });
-  const add = useMutation({ mutationFn: () => api.addPastedLead({ profileId: profile.id, ...f }), onSuccess: () => { invalidate(); flash("Candidate added — it stays hidden from results until Muse synthesizes it on the Results tab."); setF({ channel: "reddit", externalUrl: "", author: "", community: "", title: "", body: "" }); setOpen(false); } });
+  const add = useMutation({ mutationFn: () => api.addPastedLead({ profileId: profile.id, ...f }), onSuccess: () => { invalidate(); flash("Candidate added — it stays hidden until Muse synthesizes it on the Threads step."); setF({ channel: "reddit", externalUrl: "", author: "", community: "", title: "", body: "" }); setOpen(false); } });
   if (!open) return <button type="button" className={btnGhost + " w-full"} onClick={() => setOpen(true)}>+ Add a person you found (Reddit / X link, group member, anyone)</button>;
   const set = (k: keyof typeof f) => (e: { target: { value: string } }) => setF((v) => ({ ...v, [k]: e.target.value }));
   return (
     <form className="space-y-3 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-4" onSubmit={(e: FormEvent) => { e.preventDefault(); add.mutate(); }}>
-      <h3 className="font-serif text-base font-bold">Add a lead by hand</h3>
+      <h3 className="font-display text-base font-bold">Add a lead by hand</h3>
       <p className="text-sm text-[var(--dim)]">Reddit and X run on pasted links (their APIs are paid). Closed groups and DMs are guided: record the person here, get a draft, send it yourself.</p>
       <div><label htmlFor="al-ch" className={labelCls}>Where you found them</label>
         <select id="al-ch" aria-label="Channel where you found them" value={f.channel} onChange={set("channel")} className={inputCls}>
@@ -834,6 +889,73 @@ function AddLeadForm({ profile, invalidate, flash }: { profile: Profile; invalid
       <div><label htmlFor="al-body" className={labelCls}>What they said — paste their words</label><textarea id="al-body" aria-label="What they said" required rows={3} value={f.body} onChange={set("body")} className={inputCls} placeholder="Paste the post, comment, or what they told you…" /></div>
       <div className="flex gap-2"><button type="submit" className={btnPrimary} disabled={add.isPending}>Add to queue</button><button type="button" className={btnGhost} onClick={() => setOpen(false)}>Cancel</button></div>
     </form>
+  );
+}
+
+/* A thread is read-only plus one action: draft a reply. The draft itself,
+   approval and sending live one step over in Replies. */
+function ThreadCard({ lead, onDrafted, invalidate }: { lead: Lead; onDrafted: () => void; invalidate: () => void }) {
+  const [msg, setMsg] = useState("");
+  const gen = useMutation({
+    mutationFn: () => api.generateDraft({ leadId: lead.id }),
+    onSuccess: (r) => { invalidate(); if ((r.draft ?? "").trim()) onDrafted(); else setMsg(r.toneCheck || "Couldn't draft for this thread yet — it may still need Muse review first."); },
+    onError: () => setMsg("Draft failed — check your connection and try again."),
+  });
+  const confirmReview = useMutation({ mutationFn: () => api.confirmLeadReview({ leadId: lead.id }), onSuccess: () => invalidate() });
+  const heldByLlm = !!lead.llmCategory && (lead.llmCategory === "irrelevant" || (lead.llmConfidence > 0 && lead.llmConfidence < 60)) && !lead.llmReviewed;
+  return (
+    <article className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-4">
+      <div className="flex flex-wrap items-center gap-2 text-xs">
+        <span className="rounded-full bg-[var(--surface-alt)] px-2 py-0.5 font-semibold">{CHANNEL_LABEL[lead.channel] ?? lead.channel}</span>
+        {lead.community && <span className="text-[var(--dim)]">{lead.community}</span>}
+        <span className="text-[var(--dim)]">{lead.author ? `${lead.author}` : ""} {fmtDate(lead.postedAt)}</span>
+        <span className="ml-auto rounded-full border-2 border-[var(--accent)] px-2 py-0.5 font-display font-bold text-[var(--accent)]" aria-label={lead.semanticScore >= 0 ? `Semantic match score ${lead.semanticScore} out of 100 — Muse judged the situation, not word overlap` : `Keyword match score ${lead.matchScore} out of 100`}>{lead.semanticScore >= 0 ? `${lead.semanticScore} semantic match` : `${lead.matchScore} keyword match`}</span>
+      </div>
+      {lead.title && <h4 className="mt-2 font-display text-base font-bold leading-snug">{lead.title}</h4>}
+      <p className="mt-1 whitespace-pre-wrap text-sm leading-relaxed">{lead.body.slice(0, 600)}{lead.body.length > 600 ? "…" : ""}</p>
+      <p className="mt-1 text-xs text-[var(--dim)]">Why matched: {lead.matchReason}</p>
+      {lead.externalUrl && <a href={lead.externalUrl} target="_blank" rel="noreferrer" className="mt-1 inline-block text-sm font-medium text-[var(--accent)] underline">Open original post ↗</a>}
+      {lead.llmCategory && (
+        <div className="mt-3 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface-alt)] p-3">
+          <div className="flex flex-wrap items-center gap-2 text-xs">
+            <span className="font-bold uppercase tracking-wide text-[var(--dim)]">AI verdict</span>
+            <span className={`rounded-full px-2 py-0.5 font-bold ${lead.llmCategory === "seed_user" ? "bg-[var(--accent)] text-[var(--accent-text)]" : lead.llmCategory === "irrelevant" ? "bg-[var(--red)] text-white" : "bg-[var(--amber-bg)] text-[var(--amber)]"}`}>{LLM_CAT_LABEL[lead.llmCategory] ?? lead.llmCategory}</span>
+            <span className="font-semibold" aria-label={`AI confidence ${lead.llmConfidence} percent`}>{lead.llmConfidence}% confidence</span>
+          </div>
+          {lead.llmReason && <p className="mt-2 text-sm">{lead.llmReason}</p>}
+          {lead.llmQuote ? <blockquote className="mt-1 border-l-4 border-[var(--accent)] pl-3 text-sm italic">“{lead.llmQuote}”</blockquote> : <p className="mt-1 text-xs text-[var(--dim)]">No verbatim quote from the post supported this verdict — treat it with extra care.</p>}
+          {heldByLlm && (
+            <div className="mt-2 rounded-[var(--radius)] bg-[var(--amber-bg)] p-2 text-sm text-[var(--amber)]">
+              <strong>Held for your review</strong> — read the post yourself; if you disagree, clear it:
+              <button type="button" className={btnSmall + " ml-2"} disabled={confirmReview.isPending} onClick={() => confirmReview.mutate()}>I reviewed this — keep it in my queue</button>
+            </div>
+          )}
+        </div>
+      )}
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        <button type="button" className={btnPrimary} disabled={gen.isPending || heldByLlm} onClick={() => gen.mutate()}>{gen.isPending ? "Drafting…" : (lead.draftBody ?? "").trim() ? "Draft again — opens in Replies" : "Draft a reply with Muse"}</button>
+        {(lead.draftBody ?? "").trim() && <span className="text-xs text-[var(--dim)]">Already drafted — find it in Replies.</span>}
+      </div>
+      {msg && <p role="status" className="mt-2 text-sm">{msg}</p>}
+    </article>
+  );
+}
+
+/* Replies holds every thread with a draft (or moving toward send): edit the
+   words, approve the exact text, send it, mark it sent. */
+function RepliesStep({ leads, llmConfigured, onEmpty, invalidate }: { leads: Lead[]; llmConfigured: boolean; onEmpty: () => void; invalidate: () => void }) {
+  const mine = leads.filter((l) => l.status !== "dismissed" && ((l.draftBody ?? "").trim() || ["drafted", "approved", "sent"].includes(l.status)));
+  return (
+    <section className="mt-5 space-y-3" aria-label="Replies">
+      {!mine.length && (
+        <div className="rounded-[var(--radius)] border border-dashed border-[var(--border)] p-4 text-sm text-[var(--dim)]">
+          <p>No replies yet. Draft one from a thread on the Threads step — it lands here for your approval, and nothing sends without it.</p>
+          <button type="button" className={btnGhost + " mt-2"} onClick={onEmpty}>Back to Threads</button>
+        </div>
+      )}
+      {mine.map((l) => <LeadCard key={l.id} lead={l} llmConfigured={llmConfigured} invalidate={invalidate} />)}
+
+    </section>
   );
 }
 
@@ -859,10 +981,10 @@ function LeadCard({ lead, llmConfigured, invalidate }: { lead: Lead; llmConfigur
         <span className="rounded-full bg-[var(--surface-alt)] px-2 py-0.5 font-semibold">{CHANNEL_LABEL[lead.channel] ?? lead.channel}</span>
         {lead.community && <span className="text-[var(--dim)]">{lead.community}</span>}
         <span className="text-[var(--dim)]">{lead.author ? `${lead.author}` : ""} {fmtDate(lead.postedAt)}</span>
-        <span className="ml-auto rounded-full border-2 border-[var(--accent)] px-2 py-0.5 font-serif font-bold text-[var(--accent)]" aria-label={`Match score ${lead.matchScore} out of 100`}>{lead.matchScore} match</span>
+        <span className="ml-auto rounded-full border-2 border-[var(--accent)] px-2 py-0.5 font-display font-bold text-[var(--accent)]" aria-label={lead.semanticScore >= 0 ? `Semantic match score ${lead.semanticScore} out of 100 — Muse judged the situation, not word overlap` : `Keyword match score ${lead.matchScore} out of 100`}>{lead.semanticScore >= 0 ? `${lead.semanticScore} semantic match` : `${lead.matchScore} keyword match`}</span>
         <span className="rounded-full bg-[var(--amber-bg)] px-2 py-0.5 font-semibold text-[var(--amber)]">{STAGE_LABEL[lead.status]}</span>
       </div>
-      {lead.title && <h4 className="mt-2 font-serif text-base font-bold leading-snug">{lead.title}</h4>}
+      {lead.title && <h4 className="mt-2 font-display text-base font-bold leading-snug">{lead.title}</h4>}
       <p className="mt-1 whitespace-pre-wrap text-sm leading-relaxed">{lead.body.slice(0, 600)}{lead.body.length > 600 ? "…" : ""}</p>
       <p className="mt-1 text-xs text-[var(--dim)]">Why matched: {lead.matchReason}</p>
       {lead.externalUrl && <a href={lead.externalUrl} target="_blank" rel="noreferrer" className="mt-1 inline-block text-sm font-medium text-[var(--accent)] underline">Open original post ↗</a>}
@@ -927,7 +1049,7 @@ function LeadCard({ lead, llmConfigured, invalidate }: { lead: Lead; llmConfigur
 
 function TrackerTab({ leads, profile, followups, flash, invalidate }: { leads: Lead[]; profile: Profile; followups: State["followups"]; flash: (m: string) => void; invalidate: () => void }) {
   const status = useMutation({ mutationFn: (v: { id: number; s: string }) => api.setLeadStatus({ leadId: v.id, status: v.s as never }), onSuccess: () => invalidate() });
-  const invite = useMutation({ mutationFn: (lead: Lead) => api.createInvite({ profileId: profile.id, leadId: lead.id, seedName: lead.author || lead.authorHandle }), onSuccess: (r) => { invalidate(); if (!r.code) { flash(r.message || "That lead can't start a trial yet — it must be classified by Muse first."); return; } flash(`Tagged invite created: code ${r.code}. Send them your app link with ?ep=${r.code} — their usage lands in the Cohort tab, separate from everyone else.`); } });
+  const invite = useMutation({ mutationFn: (lead: Lead) => api.createInvite({ profileId: profile.id, leadId: lead.id, seedName: lead.author || lead.authorHandle }), onSuccess: (r) => { invalidate(); if (!r.code) { flash(r.message || "That lead can't start a trial yet — it must be classified by Muse first."); return; } flash(`Tagged invite created: code ${r.code}. Send them your app link with ?ep=${r.code} — their usage lands in the Cohort step, separate from everyone else.`); } });
   const nudge = useMutation({ mutationFn: (v: { id: number; o: "replied" | "snoozed" | "stopped" }) => api.answerNudge({ followupId: v.id, outcome: v.o }), onSuccess: (r) => { invalidate(); flash(r.message); } });
   const counts = STAGES.map((s) => ({ s, n: leads.filter((l) => l.status === s).length }));
   const active = leads.filter((l) => l.status !== "dismissed");
@@ -937,12 +1059,12 @@ function TrackerTab({ leads, profile, followups, flash, invalidate }: { leads: L
   const funnel = counts.map(({ s, n }) => ({ stage: STAGE_LABEL[s] ?? s, n }));
   return (
     <section className="mt-5">
-      <h2 className="font-serif text-lg font-bold">Reply → conversation → trial</h2>
+      <h2 className="font-display text-lg font-bold">Reply → conversation → trial</h2>
       <p className="text-sm text-[var(--dim)]">One tracker for every channel. A reply that never becomes a conversation is not a seed user — move each person honestly.{replyRate !== null && <> Reply rate so far: <strong className="text-[var(--text)]">{replyRate}%</strong> ({replied.length} of {sent.length} sent moved to a reply or further).</>}</p>
       <div className="mt-3 flex flex-wrap gap-1.5" role="list" aria-label="Funnel counts">
         {counts.map(({ s, n }) => (
           <div key={s} role="listitem" className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-center">
-            <div className="font-serif text-xl font-bold">{n}</div><div className="text-[11px] font-semibold uppercase tracking-wide text-[var(--dim)]">{STAGE_LABEL[s]}</div>
+            <div className="font-display text-xl font-bold">{n}</div><div className="text-[11px] font-semibold uppercase tracking-wide text-[var(--dim)]">{STAGE_LABEL[s]}</div>
           </div>
         ))}
       </div>
@@ -960,7 +1082,7 @@ function TrackerTab({ leads, profile, followups, flash, invalidate }: { leads: L
       )}
       {followups.length > 0 && (
         <div className="mt-4 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-3">
-          <h3 className="font-serif text-base font-bold">Reply nudges ({followups.length})</h3>
+          <h3 className="font-display text-base font-bold">Reply nudges ({followups.length})</h3>
           <p className="mt-1 text-sm text-[var(--dim)]">Sent, but no reply movement yet. They replied somewhere else? Say so and the lead moves. Need more time? Snooze 3 days. Never going to chase? Stop.</p>
           <div className="mt-2 space-y-2">
             {followups.map((f) => {
@@ -1019,12 +1141,12 @@ function CohortTab({ profile, leads, invites, events, feedback, summaries, llmCo
   return (
     <section className="mt-5 space-y-4">
       <div>
-        <h2 className="font-serif text-lg font-bold">Seed cohort — their usage, nobody else's</h2>
+        <h2 className="font-display text-lg font-bold">Seed cohort — their usage, nobody else's</h2>
         <p className="text-sm text-[var(--dim)]">Signals only. EarlyProof shows what your seed users actually did; whether it counts as PMF is your call — there's no score here.</p>
         <div className="mt-3 grid grid-cols-5 gap-1.5" aria-label="Cohort signal counts">
           {perType.map(({ t, n }) => (
             <div key={t} className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] px-1 py-2 text-center">
-              <div className="font-serif text-xl font-bold text-[var(--accent)]">{n}</div>
+              <div className="font-display text-xl font-bold text-[var(--accent)]">{n}</div>
               <div className="text-[10px] font-semibold uppercase tracking-wide text-[var(--dim)]">{EVENT_LABEL[t]}</div>
             </div>
           ))}
@@ -1037,7 +1159,7 @@ function CohortTab({ profile, leads, invites, events, feedback, summaries, llmCo
       <NextExperimentPanel profile={profile} summaries={summaries} llmConfigured={llmConfigured} flash={flash} invalidate={invalidate} />
 
       <div className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-4">
-        <h3 className="font-serif text-base font-bold">Tagged invites</h3>
+        <h3 className="font-display text-base font-bold">Tagged invites</h3>
         <div className="mt-2 flex flex-wrap gap-2">
           <input aria-label="Seed user name for a new invite" value={seedName} onChange={(e) => setSeedName(e.target.value)} className={inputCls + " max-w-[220px]"} placeholder="Seed user's name (optional)" />
           <button type="button" className={btnPrimary} disabled={createInv.isPending} onClick={() => createInv.mutate()}>Create invite</button>
@@ -1069,7 +1191,7 @@ function CohortTab({ profile, leads, invites, events, feedback, summaries, llmCo
       </div>
 
       <div className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-4">
-        <h3 className="font-serif text-base font-bold">Connect your app — two ways</h3>
+        <h3 className="font-display text-base font-bold">Connect your app — two ways</h3>
         <p className="mt-1 text-sm font-semibold">A. Snippet (you have no analytics)</p>
         <p className="text-sm text-[var(--dim)]">Paste this into your app, call <code>epTrack('started')</code> at signup and <code>epTrack('core')</code> at your core action, and report events with the test box below (same action your backend would call).</p>
         <pre className="mt-2 max-h-56 overflow-auto whitespace-pre-wrap rounded-[var(--radius)] bg-[var(--surface-alt)] p-3 text-[11px] leading-relaxed">{snippetQ.data?.snippet ?? "Loading snippet…"}</pre>
@@ -1096,7 +1218,7 @@ function NextExperimentPanel({ profile, summaries, llmConfigured, flash, invalid
   const sig = (c.signals && typeof c.signals === "object" ? c.signals : {}) as Record<string, unknown>;
   return (
     <div className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-4">
-      <h3 className="font-serif text-base font-bold">What to test next</h3>
+      <h3 className="font-display text-base font-bold">What to test next</h3>
       <p className="mt-1 text-sm text-[var(--dim)]">From your cohort signals, your Muse model suggests the next experiment in a fixed order — change the <strong>audience</strong> first, then the <strong>message</strong>, then the <strong>problem</strong>. This is a core Muse step: there is no rule-based suggestion standing in for it. It will never give you a PMF score or verdict: whether these signals count as PMF is your call.</p>
       {llmConfigured
         ? <button type="button" className={btnPrimary + " mt-2"} disabled={suggest.isPending} onClick={() => suggest.mutate()}>{suggest.isPending ? "Thinking…" : "Suggest next experiment with Muse"}</button>
@@ -1130,7 +1252,7 @@ function FeedbackSummaryView({ summary }: { summary: Summary }) {
       <p className="text-xs text-[var(--dim)]">Summarised {fmtDate(summary.created_at)} from {String(c.entryCount ?? "")} feedback entries. Every quote below was checked word-for-word against what users actually said — anything the model couldn't source was dropped.</p>
       {clusters.map((cl, i) => (
         <div key={i} className="rounded-[var(--radius)] border border-[var(--border)] p-3">
-          <h5 className="font-serif text-sm font-bold">{String(cl.theme ?? "What they said")}</h5>
+          <h5 className="font-display text-sm font-bold">{String(cl.theme ?? "What they said")}</h5>
           {strArr(cl.quotes).map((q, j) => <blockquote key={j} className="mt-1 border-l-4 border-[var(--accent)] pl-3 text-sm italic">“{q}”</blockquote>)}
           {strArr(cl.stuckPoints).length > 0 && <p className="mt-1 text-sm"><span className="font-semibold">Where they got stuck:</span> {strArr(cl.stuckPoints).join(" · ")}</p>}
           {strArr(cl.requests).length > 0 && <p className="mt-1 text-sm"><span className="font-semibold">What they asked for:</span> {strArr(cl.requests).join(" · ")}</p>}
@@ -1147,11 +1269,11 @@ function FeedbackSummaryView({ summary }: { summary: Summary }) {
   );
 }
 
-function AiTab({ llm, flash, invalidate }: { llm?: State["llm"]; flash: (m: string) => void; invalidate: () => void }) {
+function AiTab({ llm, flash, invalidate, onConfigured }: { llm?: State["llm"]; flash: (m: string) => void; invalidate: () => void; onConfigured: () => void }) {
   const configured = !!llm?.configured;
-  const [f, setF] = useState({ apiKey: "", founderVoice: llm?.founderVoice ?? "" });
+  const [f, setF] = useState({ apiKey: "" });
   const [testMsg, setTestMsg] = useState("");
-  const save = useMutation({ mutationFn: () => api.saveLlmSettings(f), onSuccess: (r) => { invalidate(); setF((v) => ({ ...v, apiKey: "" })); flash(r.message); } });
+  const save = useMutation({ mutationFn: () => api.saveLlmSettings(f), onSuccess: (r) => { invalidate(); setF((v) => ({ ...v, apiKey: "" })); flash(r.message); if (r.ok && r.keyStored) onConfigured(); } });
   const clear = useMutation({ mutationFn: () => api.clearLlmSettings({}), onSuccess: () => { invalidate(); flash("Muse settings removed. Muse is required, so the core flow is now blocked until you configure Muse again in the AI settings."); } });
   // Tests exactly what is in the key box (unsaved keys included) — the
   // button no longer tests a stale stored key while you look at a new one.
@@ -1161,21 +1283,20 @@ function AiTab({ llm, flash, invalidate }: { llm?: State["llm"]; flash: (m: stri
   return (
     <section className="mt-5 space-y-4">
       <div>
-        <h2 className="font-serif text-lg font-bold">AI settings {configured ? "· Edit AI config" : "· Muse is required, not optional"}</h2>
-        <p className="text-sm text-[var(--dim)]">{configured ? <><strong className="text-[var(--text)]">You're configured, and you won't be asked again</strong> on any search or visit. Your Muse configuration is saved and persists. Use this page only when you want to edit your config: replace the key or update your voice notes, then save. </> : <>First create a target profile on the Profile tab, then do this once here — it persists, and you won't be asked again; you can still edit it here anytime. Without your Muse API key, EarlyProof's core flow — search, classification, drafts, feedback summaries, next experiments — stays blocked, and there is no rule-only mode to fall back to. </>} The AI reads and writes; it never decides. It never posts or DMs on its own, never scores your PMF, and low-confidence verdicts are held for your review instead of hidden behind a number. Muse models are picked automatically — a fast tier for high-volume work (pain expansion, lead classification), a large tier for outreach drafts and feedback summaries. The rule-based topic gate stays underneath as a pre-filter and safety net, so a model can't resurrect a post the rules rejected — but it never substitutes for Muse classification.</p>
+        <h2 className="font-display text-lg font-bold">AI settings {configured ? "· Edit AI config" : "· Muse is required, not optional"}</h2>
+        <p className="text-sm text-[var(--dim)]">{configured ? <><strong className="text-[var(--text)]">You're configured, and you won't be asked again</strong> on any search or visit. Your Muse configuration is saved and persists. Use this page only when you want to edit your config: replace the key or update your voice notes, then save. </> : <>First create a target profile in step 1, then do this once here — it persists, and you won't be asked again; you can still edit it here anytime. Without your Muse API key, EarlyProof's core flow — search, classification, drafts, feedback summaries, next experiments — stays blocked, and there is no rule-only mode to fall back to. </>} The AI reads and writes; it never decides. It never posts or DMs on its own, never scores your PMF, and low-confidence verdicts are held for your review instead of hidden behind a number. Muse models are picked automatically — a fast tier for high-volume work (pain expansion, lead classification), a large tier for outreach drafts and feedback summaries. The rule-based topic gate stays underneath as a pre-filter and safety net, so a model can't resurrect a post the rules rejected — but it never substitutes for Muse classification.</p>
       </div>
 
       {/* Settings */}
       <form className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-4 space-y-3" onSubmit={(e: FormEvent) => { e.preventDefault(); save.mutate(); }}>
         <div className="flex flex-wrap items-center gap-2">
-          <h3 className="font-serif text-base font-bold">{configured ? "Edit AI config" : "Muse LLM settings"}</h3>
+          <h3 className="font-display text-base font-bold">{configured ? "Edit AI config" : "Muse LLM settings"}</h3>
           {configured
             ? <span className="rounded-full bg-[var(--accent-bg)] px-2 py-0.5 text-xs font-semibold text-[var(--accent)]">Configured ✓ · Muse · key {llm?.keyHint} · {llm?.direct ? "live" : "offline stub"} · saved — not asked again</span>
             : <span className="rounded-full bg-[var(--amber-bg)] px-2 py-0.5 text-xs font-bold text-[var(--amber)]">Setup required — core flow blocked until Muse is configured</span>}
         </div>
         <p className="text-sm text-[var(--dim)]">The provider is <strong>Muse</strong> — every AI feature in EarlyProof runs on Muse Spark 1.3, and Muse setup is required before the core flow unlocks. Paste your Muse API key here in the app — never in chat. <strong>Test connection</strong> tries exactly what's in the box against Muse Spark 1.3 and tells you plainly whether it works; <strong>Save</strong> activates a working key. The key is stored server-side for this workspace, used only when you run an AI action, and never displayed again.</p>
         <div><label htmlFor="llm-key" className={labelCls}>Muse API key {llm?.hasKey ? `(saved ${llm.keyHint} — leave blank to keep)` : ""}</label><input id="llm-key" aria-label="Muse API key" type="password" autoComplete="off" value={f.apiKey} onChange={set("apiKey")} className={inputCls} placeholder="Your Muse API key" /></div>
-        <div><label htmlFor="llm-voice" className={labelCls}>Your voice — how you actually write (drafts are written in this voice)</label><textarea id="llm-voice" aria-label="Founder voice notes" rows={2} value={f.founderVoice} onChange={set("founderVoice")} className={inputCls} placeholder="e.g. Plain and a bit dry. Short sentences. I say 'I built' not 'we're excited to'. Never use emojis or hype words." /></div>
         <div className="flex flex-wrap gap-2">
           <button type="submit" className={btnPrimary} disabled={save.isPending}>{configured ? "Save changes to AI config" : "Save Muse settings"}</button>
           <button type="button" className={btnGhost} disabled={!configured || test.isPending} onClick={() => test.mutate()}>{test.isPending ? "Testing…" : "Test connection"}</button>
@@ -1184,8 +1305,36 @@ function AiTab({ llm, flash, invalidate }: { llm?: State["llm"]; flash: (m: stri
         {testMsg && <p role="status" className="text-sm">{testMsg}</p>}
       </form>
 
-      <p className="text-sm text-[var(--dim)]">Pain language lives on the Profile tab, lead classification on the Results tab, outreach drafts on each lead, and feedback plus the next-experiment suggestion in the Cohort tab — all running on these same settings.</p>
+      <p className="text-sm text-[var(--dim)]">Pain language lives in the Profile step, thread synthesis in the Threads step, drafts and approvals in the Replies step, and feedback plus the next-experiment suggestion in the Cohort step — all running on these same settings.</p>
+
+      <WebSearchSettings llm={llm} flash={flash} invalidate={invalidate} />
     </section>
+  );
+}
+
+function WebSearchSettings({ llm, flash, invalidate }: { llm?: State["llm"]; flash: (m: string) => void; invalidate: () => void }) {
+  const [key, setKey] = useState("");
+  const [testMsg, setTestMsg] = useState("");
+  const save = useMutation({ mutationFn: () => api.saveBraveKey({ braveKey: key }), onSuccess: (r) => { invalidate(); setKey(""); flash(r.message); } });
+  const test = useMutation({ mutationFn: () => api.testBraveKey({ braveKey: key }), onSuccess: (r) => setTestMsg(r.message), onError: () => setTestMsg("Brave test failed — check your connection and try again.") });
+  const clear = useMutation({ mutationFn: () => api.saveBraveKey({ braveKey: "" }), onSuccess: (r) => { invalidate(); flash(r.message); } });
+  return (
+    <div className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-4">
+      <div className="flex flex-wrap items-center gap-2">
+        <h3 className="font-display text-base font-bold">Web search — optional but recommended</h3>
+        {llm?.hasBraveKey
+          ? <span className="rounded-full bg-[var(--accent-bg)] px-2 py-0.5 text-xs font-semibold text-[var(--accent)]">Brave key saved — discovery uses it first</span>
+          : <span className="rounded-full bg-[var(--amber-bg)] px-2 py-0.5 text-xs font-bold text-[var(--amber)]">Free DuckDuckGo — throttles on some networks</span>}
+      </div>
+      <p className="mt-1 text-sm text-[var(--dim)]">Channel discovery checks the live web for real discussion threads. Free DuckDuckGo scraping works until their bot filter throttles your network (then lineups run on Muse's plan alone). A <a className="font-semibold text-[var(--accent)] underline" href="https://brave.com/search/api/" target="_blank" rel="noreferrer">free Brave Search API key</a> fixes that: one query per profile, cached 2 hours. Paste it here in the app — never in chat.</p>
+      <div className="mt-2"><label htmlFor="brave-key" className={labelCls}>Brave Search API key {llm?.hasBraveKey ? "(saved — use Remove below to clear)" : ""}</label><input id="brave-key" aria-label="Brave Search API key" type="password" autoComplete="off" value={key} onChange={(e) => setKey(e.target.value)} className={inputCls} placeholder="BSA…" /></div>
+      <div className="mt-2 flex flex-wrap gap-2">
+        <button type="button" className={btnPrimary} disabled={!key.trim() || save.isPending} onClick={() => save.mutate()}>{save.isPending ? "Saving…" : "Save Brave key"}</button>
+        <button type="button" className={btnGhost} disabled={test.isPending || (!key.trim() && !llm?.hasBraveKey)} onClick={() => test.mutate()}>{test.isPending ? "Testing…" : "Test Brave key"}</button>
+        {llm?.hasBraveKey && <button type="button" className={btnGhost} disabled={clear.isPending} onClick={() => clear.mutate()}>Remove Brave key</button>}
+      </div>
+      {testMsg && <p role="status" className="mt-2 text-sm">{testMsg}</p>}
+    </div>
   );
 }
 
@@ -1240,13 +1389,13 @@ function ChannelsTab({ connections, flash, invalidate }: { connections: State["c
   return (
     <section className="mt-5 space-y-4">
       <div>
-        <h2 className="font-serif text-lg font-bold">Channels — three honest modes</h2>
+        <h2 className="font-display text-lg font-bold">Channels — three honest modes</h2>
         <p className="text-sm text-[var(--dim)]">Search runs across the <strong className="text-[var(--text)]">open channels</strong> your profile maps to (Bluesky, Hacker News, GitHub, Stack Exchange, caregiver and parenting forums, beauty forums, Dev.to, Lobsters, plus any web-discovered forum) by default — no connection needed here for those. <strong className="text-[var(--text)]">Closed channels</strong> join the search only after you provide their API or account connection on this page; leaving one unconnected never blocks the open-channel search. Live channels post only after you approve the exact draft. Closed communities without a search API are guided — you join and send. Reviews are insight only, never outreach.</p>
       </div>
 
       {/* Bluesky */}
       <div className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-4">
-        <div className="flex flex-wrap items-center gap-2"><h3 className="font-serif text-base font-bold">Bluesky — live, posts after your approval</h3><ConnBadge connections={connections} channel="bluesky" /></div>
+        <div className="flex flex-wrap items-center gap-2"><h3 className="font-display text-base font-bold">Bluesky — live, posts after your approval</h3><ConnBadge connections={connections} channel="bluesky" /></div>
         <p className="mt-1 text-sm text-[var(--dim)]">Free AT Protocol. Search needs a free Bluesky account: create an App Password in Bluesky (Settings → Privacy and security → App passwords) and connect once. The password itself is never stored — only the session it creates.</p>
         <div className="mt-2 grid gap-2 sm:grid-cols-2">
           <div><label htmlFor="bs-handle" className={labelCls}>Your Bluesky handle</label><input id="bs-handle" aria-label="Bluesky handle" value={bsky.handle} onChange={(e) => setBsky((v) => ({ ...v, handle: e.target.value }))} className={inputCls} placeholder="you.bsky.social" /></div>
@@ -1260,7 +1409,7 @@ function ChannelsTab({ connections, flash, invalidate }: { connections: State["c
 
       {/* GitHub + HN */}
       <div className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-4">
-        <div className="flex flex-wrap items-center gap-2"><h3 className="font-serif text-base font-bold">GitHub — live search, comments after approval</h3><ConnBadge connections={connections} channel="github" /></div>
+        <div className="flex flex-wrap items-center gap-2"><h3 className="font-display text-base font-bold">GitHub — live search, comments after approval</h3><ConnBadge connections={connections} channel="github" /></div>
         <p className="mt-1 text-sm text-[var(--dim)]">Search is free with no key. To post an approved comment from here, add a fine-grained personal access token with Issues read/write. Without one, drafts degrade to copy-and-post yourself.</p>
         <div className="mt-2 flex flex-wrap gap-2">
           <input aria-label="GitHub personal access token" type="password" value={ghToken} onChange={(e) => setGhToken(e.target.value)} className={inputCls + " max-w-[320px]"} placeholder="github_pat_…" />
@@ -1273,12 +1422,12 @@ function ChannelsTab({ connections, flash, invalidate }: { connections: State["c
       {/* Reddit POC */}
       <div className="rounded-[var(--radius)] border-2 border-[var(--amber)] bg-[var(--surface)] p-4">
         <div className="flex flex-wrap items-center gap-2">
-          <h3 className="font-serif text-base font-bold">Reddit — proof of concept only</h3>
+          <h3 className="font-display text-base font-bold">Reddit — proof of concept only</h3>
           <span className="rounded-full bg-[var(--amber-bg)] px-2 py-0.5 text-xs font-bold text-[var(--amber)]">POC · FREE NON-COMMERCIAL TIER</span>
           <ConnBadge connections={connections} channel="reddit_poc" />
         </div>
         <div className="mt-2 rounded-[var(--radius)] bg-[var(--amber-bg)] p-3 text-sm text-[var(--amber)]">
-          <strong>Read before connecting:</strong> this connector exists only to validate the Reddit flow internally. It uses <strong>your own Reddit OAuth app</strong> on Reddit's free non-commercial tier — on-demand search of a few subreddits (no continuous polling, results cached, well under the 100 queries/minute limit), and replies post only after you approve the exact text. <strong>It is not for a commercial launch or paying customers</strong> — that requires a separate Reddit commercial agreement. For anything beyond POC validation, use the pasted-link flow in the Match queue instead.
+          <strong>Read before connecting:</strong> this connector exists only to validate the Reddit flow internally. It uses <strong>your own Reddit OAuth app</strong> on Reddit's free non-commercial tier — on-demand search of a few subreddits (no continuous polling, results cached, well under the 100 queries/minute limit), and replies post only after you approve the exact text. <strong>It is not for a commercial launch or paying customers</strong> — that requires a separate Reddit commercial agreement. For anything beyond POC validation, use the pasted-link flow on the Threads step instead.
         </div>
         <p className="mt-2 text-sm text-[var(--dim)]">Setup: sign in to reddit.com → Settings → go to reddit.com/prefs/apps → “create app” → choose <em>script</em> (simplest for a POC) or <em>web app</em> → note the client ID (under the app name) and secret.</p>
 
@@ -1308,11 +1457,11 @@ function ChannelsTab({ connections, flash, invalidate }: { connections: State["c
 
       {/* Guided tier */}
       <div className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-4">
-        <h3 className="font-serif text-base font-bold">Guided channels — you join, you send</h3>
+        <h3 className="font-display text-base font-bold">Guided channels — you join, you send</h3>
         <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-[var(--dim)]">
-          <li><strong className="text-[var(--text)]">Facebook Groups, Discord, Slack:</strong> no outside search or posting API exists. Find the group, join as a real member, add the person in the Match queue (“Add a person you found”), get a draft, send it yourself.</li>
+          <li><strong className="text-[var(--text)]">Facebook Groups, Discord, Slack:</strong> no outside search or posting API exists. Find the group, join as a real member, add the person on the Threads step (“Add a person you found”), get a draft, send it yourself.</li>
           <li><strong className="text-[var(--text)]">LinkedIn & Instagram DMs:</strong> automated DMing gets accounts flagged fast, so these stay draft-and-send too.</li>
-          <li><strong className="text-[var(--text)]">Reddit & X beyond the POC:</strong> paste the thread/post link in the Match queue — drafts and tracking work the same, you post from your own account. Their APIs are paid, so EarlyProof doesn't bill you for them.</li>
+          <li><strong className="text-[var(--text)]">Reddit & X beyond the POC:</strong> paste the thread/post link on the Threads step — drafts and tracking work the same, you post from your own account. Their APIs are paid, so EarlyProof doesn't bill you for them.</li>
         </ul>
       </div>
 

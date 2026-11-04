@@ -2,6 +2,9 @@ import { defineAction, z, type ActionsModule, type Ctx } from "@hatch/space-sdk"
 import { desc, eq, and, or, like, inArray } from "drizzle-orm";
 import type { BunSQLiteDatabase } from "drizzle-orm/bun-sqlite";
 import { META_MODEL, completeViaMetaModel, completeViaMetaModelText, isDirectKey } from "./meta-api";
+import { bm25Order, fuseRanks } from "./retrieval";
+import { extractOutlinkDomains, forumGraphVenues, parseSeRelatedSites, registrable, seGraphVenues } from "./venue-graph";
+import { defineAgent } from "./agents";
 import * as schema from "./schema";
 
 type Db = BunSQLiteDatabase<typeof schema>;
@@ -11,38 +14,14 @@ const UA = "EarlyProof/1.0 (founder-approved seed outreach)";
 // are testing. Keep in sync with package.json.
 const PKG_VERSION = "0.2.0";
 
-// ─── FirstFeedback Hacker News retune (2026-10-29) ─────────────────────────
-// For the FirstFeedback profile ONLY, Hacker News is an Ask HN help-request
-// channel, not a general story search. The previous live runs were dominated
-// by Show HN showcases (new tools announcing themselves), which Muse
-// correctly classified irrelevant — the pain lives in Ask HN threads where a
-// solo developer asks for help getting first users. Rules for this profile:
-//   • HN queries are the help-request phrases below (plus the founder's
-//     original pain phrases), never the generic expansion queries.
-//   • Only a story whose TITLE starts with "Ask HN" is a candidate.
-//     "Show HN" titles — and every other title — are excluded before the
-//     pre-filter, so they never count as found/discarded candidates.
-//   • Retrieval uses Algolia's `ask_hn` tag + relevance ranking (both
-//     verified live 2026-10-29: tags=ask_hn returns Ask HN stories, and
-//     relevance surfaces the actual help posts that search_by_date buried
-//     under newer Show HN posts), AND the title-prefix check runs
-//     server-side as the authoritative gate — an ask_hn-tagged story whose
-//     title does not start with "Ask HN" is still excluded.
-// Other profiles and other channels (Bluesky, GitHub) are untouched.
-const FIRSTFEEDBACK_HN_HELP_QUERIES = [
-  "how did you get your first users",
-  "launched to crickets",
-  "no traction",
-  "no response",
-  "validate demand for my side project",
-  "need feedback on my project",
-  "I launched my app and got zero users",
-  "I don't know where to find my first users",
-  "I posted it everywhere and still got no traction",
-];
-function isFirstFeedbackProfile(profile: ProfileLike): boolean {
-  return normText(profile.productName) === "firstfeedback";
-}
+// ─── Hacker News: Ask HN only, for every profile ──────────────────────────
+// Hacker News is an Ask HN help-request channel, not a general story search:
+// live runs were dominated by Show HN showcases (new tools announcing
+// themselves), while the pain lives in Ask HN threads where someone asks for
+// help. So retrieval uses Algolia's `ask_hn` tag + relevance ranking, AND the
+// title-prefix check runs server-side as the authoritative gate — an
+// ask_hn-tagged story whose title does not start with "Ask HN" is excluded.
+// Comment hits carry no story title and drop out the same way.
 function hnTitleKind(title: string): "ask" | "show" | "other" {
   const t = title.trim().toLowerCase();
   if (t.startsWith("ask hn")) return "ask";
@@ -79,7 +58,7 @@ function leadShape(l: typeof schema.leads.$inferSelect) {
   return {
     id: l.id, profileId: l.profileId, channel: l.channel, mode: l.mode, externalUrl: l.externalUrl,
     externalId: l.externalId, author: l.author, authorHandle: l.authorHandle, title: l.title, body: l.body,
-    community: l.community, postedAt: l.postedAt, matchScore: l.matchScore, matchReason: l.matchReason,
+    community: l.community, postedAt: l.postedAt, matchScore: l.matchScore, matchReason: l.matchReason, semanticScore: l.semanticScore,
     draftBody: l.draftBody, status: l.status, postedUrl: l.postedUrl, created_at: l.createdAt.toISOString(),
     llmCategory: l.llmCategory, llmConfidence: l.llmConfidence, llmReason: l.llmReason, llmQuote: l.llmQuote,
     llmSignals: l.llmSignals, llmReviewed: l.llmReviewed === 1, draftToneCheck: l.draftToneCheck,
@@ -98,7 +77,7 @@ const PAIN_PHRASE_SIGNALS = ["no users","no user","zero users","no traction","no
 const WORKAROUND_PHRASE_SIGNALS = ["product hunt","posted on hn","posted on hacker news","posted to hacker news","shared on twitter","asked my friends","asked friends","asked my friend","friends said","friends say","friends just say","just say cool","say its cool","hoping for traction","waiting for feedback","asked for feedback","build in public","building in public","posted it on","shared it on","launched on","posted on reddit","shared on reddit"];
 // Tokens too weak to serve as a domain anchor on their own — common verbs and
 // qualifiers that appear in almost any post ("first", "get", "real"…).
-const WEAK_ANCHOR_TOKENS = new Set(["first","real","get","gets","got","getting","find","finding","found","know","knows","something","anything","almost","just","like","even","still","much","many","made","way","one","two","help","helps","need","needs","want","wants","try","trying","work","works","working","using","used","new","good","bad","better","best","thing","things","side","honest","people","person","don","doesn","didn","isn","aren","wasn","won","wouldn","couldn","shouldn","haven","hasn","can","cant"]);
+const WEAK_ANCHOR_TOKENS = new Set(["first","real","get","gets","got","getting","find","finding","found","know","knows","something","anything","almost","just","like","even","still","much","many","made","way","one","two","help","helps","need","needs","want","wants","try","trying","work","works","working","using","used","new","good","bad","better","best","thing","things","side","honest","people","person","wrong","don","doesn","didn","isn","aren","wasn","won","wouldn","couldn","shouldn","haven","hasn","can","cant"]);
 // Pain words that are too weak to satisfy the signal requirement ALONE:
 // they appear in ordinary product pitches and bug reports ("a Lovable
 // alternative", "the problem is…", "this issue…") without the poster being
@@ -111,32 +90,10 @@ const WEAK_PAIN_WORDS = new Set(["alternative","help","problem","issue","slow","
 const GENERIC_TOKENS = new Set(["skill","skills","suck","sucks","sucked","make","makes","making","struggle","struggling","struggles","hard","difficult","help","helps","problem","problems","issue","issues","lack","lacks","due","put","puts","getting","learn","learning","beginner","beginners","novice","novices","really","just","thing","things","stuff","people","person","way","ways","new","good","bad","better","best","work","works","working","use","using","used","try","trying","want","wants","need","needs"]);
 const STOP_TOKENS = new Set(["my","i","me","the","a","an","to","of","for","on","in","at","is","it","its","and","or","but","so","do","does","did","how","what","when","why","who","am","are","was","were","be","been","with","without","from","by","as","if","then","than","too","very","can","cant","could","would","should","this","that","these","those","you","your","yours","we","our","they","their","them","he","she","his","her","not","no","yes","all","any","some","into","about","over","under","after","before","again","once","here","there","out","off","up","down","dont","doesnt","didnt","isnt","arent","wasnt"]);
 
-// Domain clusters: when a profile is about a topic, a post only counts if the
-// post ITSELF contains a real term from that topic — a generic word like
-// "skill" or "sucks" is not enough. The matched term is named in the reason.
-type DomainCluster = { id: string; label: string; triggers: string[]; terms: string[] };
-const DOMAIN_CLUSTERS: DomainCluster[] = [
-  {
-    id: "makeup", label: "makeup",
-    triggers: ["makeup", "cosmetics", "cosmetic", "eyeliner", "foundation", "mascara", "beauty routine"],
-    terms: ["makeup", "cosmetics", "cosmetic", "foundation", "eyeliner", "eye liner", "mascara", "lipstick", "lip stick", "blush", "concealer", "eyeshadow", "eye shadow", "bronzer", "highlighter", "contour", "contouring", "primer", "setting spray", "setting powder", "brow pencil", "eyebrow pencil", "beauty blender", "makeup routine", "makeup tutorial"],
-  },
-  {
-    id: "lego", label: "lego",
-    triggers: ["lego", "legos", "afol", "duplo", "bricklink"],
-    terms: ["lego", "legos", "afol", "duplo", "technic", "minifig", "minifigure", "bricklink", "lego set", "retired set"],
-  },
-  {
-    id: "medical", label: "medical",
-    triggers: ["doctor", "doctors", "physician", "physicians", "nurse", "nurses", "medical student", "medical school", "scribe", "clinic", "clinical"],
-    terms: ["doctor", "doctors", "physician", "physicians", "nurse", "nurses", "scribe", "patient", "patients", "clinic", "clinical", "residency"],
-  },
-  {
-    id: "home", label: "home repair",
-    triggers: ["handyman", "handymen", "plumber", "electrician", "hvac", "remodel", "drywall", "home repair", "contractor"],
-    terms: ["handyman", "handymen", "plumber", "plumbing", "electrician", "hvac", "repair", "repairs", "drywall", "remodel", "remodeling", "renovation", "faucet", "toilet", "contractor"],
-  },
-];
+// NOTE (founder rule): no topic lists live in this file — no clusters, no
+// per-vertical signals, no per-profile channels. Every topic decision comes
+// from the founder's own profile text (anchors) and Muse's expansion plan
+// (channels, venues). The code below only executes searches and gates.
 
 // LIGHT SAFETY NET (changed after the FirstFeedback live test, 2026-10-28):
 // the old bar was 62, and a context-only match could score at most
@@ -151,9 +108,12 @@ const DOMAIN_CLUSTERS: DomainCluster[] = [
 // synthesized results are ever shown (Step 4).
 const MIN_SAVE_SCORE = 38;
 
-function normText(s: string): string {
-  // Unify make-up / make up / makeup so the phrase and the terms compare cleanly.
-  return s.toLowerCase().replace(/make[-\s]?up/g, " makeup ").replace(/[^a-z0-9]+/g, " ").replace(/\s+/g, " ").trim();
+export function normText(s: string): string {
+  // One normalization for every vertical: lowercase, non-alphanumerics to
+  // spaces, collapse whitespace. No per-topic exceptions — "make-up" reads
+  // as "make up" for the same reason "set-up" reads as "set up"; matching a
+  // joined compound to its spaced form is the caller's job, never this fn's.
+  return s.toLowerCase().replace(/[^a-z0-9]+/g, " ").replace(/\s+/g, " ").trim();
 }
 function containsTerm(normHaystack: string, normTerm: string): boolean {
   if (!normTerm) return false;
@@ -198,7 +158,7 @@ function significantTokens(normPhrase: string): string[] {
   return normPhrase.split(" ").filter((w) => w.length > 2 && !STOP_TOKENS.has(w));
 }
 
-type ProfileLike = { productName: string; productDesc: string; audience: string; pain: string; workaround: string; keywords: string; coreAction: string; exclusions?: string };
+export type ProfileLike = { productName: string; productDesc: string; audience: string; pain: string; workaround: string; keywords: string; coreAction: string; exclusions?: string };
 type Relevance = { score: number; reason: string; keep: boolean; matchedTerms: string[]; exactPhrase: string; contextPhrase: string; anchorHits: string[]; anchorPresent: boolean; painSignals: string[]; workaroundSignal: string };
 
 function keywordPhrases(profile: ProfileLike): string[] {
@@ -207,22 +167,17 @@ function keywordPhrases(profile: ProfileLike): string[] {
   const p = profile.pain.trim();
   return p ? [p] : [];
 }
-function activeClusters(profile: ProfileLike): DomainCluster[] {
-  const all = normText([profile.productName, profile.productDesc, profile.audience, profile.pain, profile.workaround, profile.keywords, profile.coreAction].join(" "));
-  return DOMAIN_CLUSTERS.filter((c) => c.triggers.some((t) => containsTerm(all, normText(t))));
-}
-// The query sent to a channel's search API: for a clustered (e.g. makeup)
-// profile that is the topic term itself, never an OR of the keyword's words.
+
+// The query sent to a channel's search API: when the founder names keyword
+// phrases, the query is the topic phrase itself, never an OR of the
+// phrase's words.
 function searchQueryFor(profile: ProfileLike): string {
-  const clusters = activeClusters(profile);
-  const first = clusters[0];
-  if (first) return first.terms[0] ?? first.label;
   const phrases = keywordPhrases(profile);
   return phrases[0] ?? profile.pain.split(/\s+/).filter((w) => w.length > 4).slice(0, 3).join(" ");
 }
 
-// Domain anchor tokens for a NON-clustered profile, derived from the
-// founder's own profile text — keywords first (the strongest signal), then
+// Domain anchor tokens, derived from the founder's own profile text —
+// keywords first (the strongest signal), then
 // audience, then pain. Weak everyday words ("first", "get", "real", generic
 // tokens, stop words) never serve as anchors, so a generic post that merely
 // shares a common word with the profile still has no anchor and is dropped.
@@ -257,31 +212,17 @@ function splitAnchorTiers(profile: ProfileLike): { strong: string[]; secondary: 
   return { strong, secondary: all.filter((w) => !strong.includes(w) && w !== "show") };
 }
 
-export function analyseText(rawText: string, profile: ProfileLike, channel?: string): Relevance {
+export function analyseText(rawText: string, profile: ProfileLike, _channel?: string): Relevance {
   const text = normText(rawText);
-  const clusters = activeClusters(profile);
-  const cluster = clusters[0];
+  const matchedTerms: string[] = [];
   let score = 0;
   const parts: string[] = [];
 
   // 1. Domain anchor in the post itself — the safety net's hard requirement.
-  // Clustered profile: a real term from the cluster (makeup, foundation…).
-  // Other profiles: a strong keyword anchor, the "show hn" phrase anchor,
-  // or two secondary anchors from the audience/pain text.
-  const matchedTerms: string[] = [];
-  if (cluster) {
-    const seenNorm = new Set<string>();
-    for (const term of cluster.terms) {
-      const nt = normText(term);
-      if (seenNorm.has(nt)) continue;
-      if (containsTerm(text, nt)) { matchedTerms.push(term); seenNorm.add(nt); }
-    }
-    if (matchedTerms.length) {
-      score += 38 + Math.min((matchedTerms.length - 1) * 6, 18);
-      parts.push(`Matched ${cluster.label} term “${matchedTerms[0]}” in the post${matchedTerms.length > 1 ? ` (also ${matchedTerms.slice(1, 4).map((t) => `“${t}”`).join(", ")})` : ""}`);
-    }
-  }
-  const tiers = cluster ? { strong: [] as string[], secondary: [] as string[] } : splitAnchorTiers(profile);
+  // Anchors come only from the founder's own profile text (keywords first,
+  // then audience, then pain): a strong keyword anchor, the "show hn" phrase
+  // anchor, or two secondary anchors. No topic lists anywhere in this file.
+  const tiers = splitAnchorTiers(profile);
   // Kinship-aware anchor matching: "mom" also matches "dad"/"LO"/"father" in
   // the post. The surface form is tracked so the reason stays truthful.
   const anchorVia = new Map<string, string>();
@@ -293,17 +234,17 @@ export function analyseText(rawText: string, profile: ProfileLike, channel?: str
   // clear the gate for profiles that never mention Show HN, and pitch language
   // ("hard to", "difficult", "problem") supplied the signal.
   const showHnWanted = keywordPhrases(profile).some((p) => normText(p).includes("show hn"));
-  const showHnHit = !cluster && showHnWanted && text.includes("show hn");
+  const showHnHit = showHnWanted && text.includes("show hn");
   // One surface word = one hit: kinship synonyms mean several terms can
   // match through the SAME word ("mom", "siblings", "children" all via
   // "child"). Counting each would inflate the score and print words the post
   // never contains — so hits sharing a surface form collapse to one, and the
   // reason names surface forms (what is really in the post).
   const surfaceOf = (t: string): string => (t === "show hn" ? t : (anchorVia.get(t) ?? normText(t)));
-  const rawHits: string[] = cluster ? [...matchedTerms] : [...strongHits, ...(showHnHit ? ["show hn"] : []), ...secondaryHits];
+  const rawHits: string[] = [...strongHits, ...(showHnHit ? ["show hn"] : []), ...secondaryHits];
   const seenSurface = new Set<string>();
   const anchorHits = rawHits.filter((t) => {
-    const s = cluster ? normText(t) : surfaceOf(t);
+    const s = surfaceOf(t);
     if (seenSurface.has(s)) return false;
     seenSurface.add(s);
     return true;
@@ -311,10 +252,8 @@ export function analyseText(rawText: string, profile: ProfileLike, channel?: str
   const strongSet = new Set(strongHits);
   const uniqStrong = anchorHits.filter((t) => strongSet.has(t)).length;
   const uniqSecondary = anchorHits.length - uniqStrong - (showHnHit && anchorHits.includes("show hn") ? 1 : 0);
-  const anchorPresent = cluster
-    ? matchedTerms.length > 0
-    : uniqStrong > 0 || showHnHit || uniqSecondary >= 2;
-  if (!cluster && anchorPresent && anchorHits.length) {
+  const anchorPresent = uniqStrong > 0 || showHnHit || uniqSecondary >= 2;
+  if (anchorPresent && anchorHits.length) {
     score += 34 + Math.min((anchorHits.length - 1) * 5, 16);
     const [first = ""] = anchorHits; // anchorHits.length checked above
     const via = anchorVia.get(first);
@@ -329,7 +268,7 @@ export function analyseText(rawText: string, profile: ProfileLike, channel?: str
   const painWordHits = PAIN_WORDS.filter((w) => containsTerm(text, normText(w)));
   const painPhraseHits = PAIN_PHRASE_SIGNALS.filter((p) => containsTerm(text, normText(p)));
   const negatedAnchorHits: string[] = [];
-  for (const a of [...tiers.strong, ...matchedTerms.map((t) => normText(t))]) {
+  for (const a of tiers.strong) {
     if (text.includes(`no ${a}`) || text.includes(`zero ${a}`) || text.includes(`0 ${a}`)) negatedAnchorHits.push(`no ${a}`);
   }
   const painSignals: string[] = [...new Set([...painPhraseHits, ...negatedAnchorHits, ...painWordHits])];
@@ -356,9 +295,9 @@ export function analyseText(rawText: string, profile: ProfileLike, channel?: str
       contextPhrase = phrase;
     }
   }
-  if (exactPhrase) { score += cluster ? 28 : 24; parts.push(`matches your keyword phrase “${exactPhrase}” word for word`); }
+  if (exactPhrase) { score += 24; parts.push(`matches your keyword phrase “${exactPhrase}” word for word`); }
   else if (contextPhrase) {
-    score += cluster ? 16 : 18;
+    score += 18;
     parts.push(`keyword context present — the specific words of “${contextPhrase}” appear in the post alongside a pain signal`);
   }
 
@@ -373,7 +312,7 @@ export function analyseText(rawText: string, profile: ProfileLike, channel?: str
   // generic word, and not an anchor/topic term itself — the anchor match is
   // already scored above).
   const workaroundPhraseHit = WORKAROUND_PHRASE_SIGNALS.find((p) => containsTerm(text, normText(p))) ?? "";
-  const anchorTokenSet = new Set([...tiers.strong, ...tiers.secondary, ...(cluster?.terms ?? []).flatMap((t) => normText(t).split(" "))]);
+  const anchorTokenSet = new Set([...tiers.strong, ...tiers.secondary]);
   // Keyword-phrase tokens are excluded too: "show" (from "Show HN") is part
   // of a keyword phrase, and letting it double as the workaround signal
   // meant every Show HN showcase satisfied anchor AND signal with the same
@@ -384,11 +323,6 @@ export function analyseText(rawText: string, profile: ProfileLike, channel?: str
   const workTokenHit = workTokens.find((w) => containsTerm(text, w)) ?? "";
   const workaroundSignal = workaroundPhraseHit || workTokenHit;
   if (workaroundSignal && anchorPresent) { score += 8; parts.push(`mentions workaround behaviour (“${workaroundSignal}”)`); }
-
-  // Hacker News is a tech pool: for a consumer-topic (clustered) profile it
-  // is deprioritised — the same post needs a stronger signal from HN. For a
-  // developer-audience profile HN is the home pool, so no dock applies.
-  if (channel === "hackernews" && cluster) score = Math.max(0, score - 8);
 
   score = Math.max(0, Math.min(97, score));
   // Founder exclusions veto: phrases named (via pain expansion) as proof a
@@ -411,11 +345,9 @@ export function analyseText(rawText: string, profile: ProfileLike, channel?: str
   const keep = anchorPresent && hasSignal && score >= MIN_SAVE_SCORE && !exclusionHit;
   const reason = parts.length
     ? parts.join("; ") + "."
-    : cluster
-      ? `No ${cluster.label} term in this post — generic words like “skill” or “sucks” don't count as a domain anchor.`
-      : anchorPresent
-        ? "Domain anchor present, but no pain or workaround signal alongside it — the light pre-filter drops anchor-only posts (ads, showcases, announcements) and lets Muse judge the rest."
-        : "No domain anchor from your profile in this post — generic words don't count as an anchor, so the light pre-filter drops it before Muse.";
+    : anchorPresent
+      ? "Domain anchor present, but no pain or workaround signal alongside it — the light pre-filter drops anchor-only posts (ads, showcases, announcements) and lets Muse judge the rest."
+      : "No domain anchor from your profile in this post — generic words don't count as an anchor, so the light pre-filter drops it before Muse.";
   return { score, reason, keep, matchedTerms, exactPhrase, contextPhrase, anchorHits, anchorPresent, painSignals, workaroundSignal };
 }
 function scoreText(text: string, profile: ProfileLike): { score: number; reason: string } {
@@ -519,8 +451,30 @@ async function loadLlmSettings(ctx: Ctx): Promise<LlmSettingsRow | null> {
   if (!s || !s.apiKey.trim()) return null;
   return s;
 }
+// The local-harness seed placeholder. It exists so a fresh localhost DB has a
+// settings row, but it is NOT a key — treating it as configured is the lie
+// that filled screens with [local-stub] phrases while the pill looked fine.
+const STUB_API_KEY = "local-stub-key";
+function isPlaceholderKey(k: string): boolean {
+  return k.trim() === STUB_API_KEY;
+}
+// Stub output is test output. Without a key the Model API accepts, the
+// workspace runtime answers with [local-stub]-tagged values — those must
+// never be saved or shown as real. They are blocked unless explicitly
+// allowed (EARLYPROOF_ALLOW_STUB=1, set only by this repo's own smoke and
+// journey harnesses). Everyone else gets a clean not_configured alert that
+// says exactly what to do, never dummy data dressed as results.
+function stubAllowed(): boolean {
+  return process.env.EARLYPROOF_ALLOW_STUB === "1";
+}
+function isStubTagged(v: unknown): boolean {
+  try { return JSON.stringify(v).includes("[local-stub]"); } catch { return false; }
+}
+function stubBlocked(): LlmFail {
+  return { ok: false, status: "not_configured", message: "No working Muse model answered — test output is disabled here, so nothing dummy is shown or saved. Enter a real Muse API key in step 0 (AI config), Test it, Save it, and the plans, phrases, verdicts and drafts generate live." };
+}
 function llmConfigured(s: LlmSettingsRow | null): boolean {
-  return !!s && !!s.apiKey.trim() && !!s.smallModel.trim() && !!s.largeModel.trim();
+  return !!s && !!s.apiKey.trim() && !isPlaceholderKey(s.apiKey) && !!s.smallModel.trim() && !!s.largeModel.trim();
 }
 // Routing verdicts per key, so a key the API rejected (or the network
 // failed) doesn't pay a slow direct attempt on every call. Direct successes
@@ -558,7 +512,7 @@ function shapeOf(v: unknown, depth = 0): string {
 // Runs one bounded Muse task through the workspace's Muse model runtime
 // with a typed schema (the runtime validates the shape). The founder's
 // configured Muse model name for the tier travels with the task.
-async function runLlm<T>(ctx: Ctx, tier: "small" | "large", task: string, schema: z.ZodSchema<T>): Promise<{ ok: true; value: T } | LlmFail> {
+async function runLlm<T>(ctx: Ctx, tier: "small" | "large", task: string, schema: z.ZodSchema<T>, opts?: { allowStubTag?: boolean }): Promise<{ ok: true; value: T } | LlmFail> {
   const s = await loadLlmSettings(ctx);
   if (!llmConfigured(s) || !s) return { ok: false, status: "not_configured", message: LLM_SETUP_MESSAGE };
   const model = (tier === "large" ? (s.largeModel || s.smallModel) : (s.smallModel || s.largeModel)).trim();
@@ -568,6 +522,10 @@ async function runLlm<T>(ctx: Ctx, tier: "small" | "large", task: string, schema
   // fails closed (never silently stubbed). Any other rejected key falls back
   // to the workspace model runtime (the local stub, honestly tagged).
   const forcedDirect = isDirectKey(s.apiKey);
+  // When the direct attempt fails and the runtime fallback is blocked test
+  // output, this carries the true cause so the founder never hears "enter a
+  // real key" while one is already saved and working.
+  let directError: string | null = null;
   if (forcedDirect || cachedRoute(s.apiKey) !== "runtime") {
     const r = await completeViaMetaModel(task, s.apiKey, META_MODEL);
     if (r.ok) {
@@ -589,12 +547,20 @@ async function runLlm<T>(ctx: Ctx, tier: "small" | "large", task: string, schema
     // serves it (the local stub, honestly tagged). The rejection is already
     // reported by Test connection and the status pill.
     if (r.error.startsWith("HTTP 401")) rememberRoute(s.apiKey, "runtime");
+    else directError = r.error;
   }
   try {
     const value = await ctx.inference.complete(
       `Configured Muse model for this task (${tier === "large" ? "large tier — quality matters more than speed" : "small/fast tier — high-volume first pass"}): ${model}\n\n${task}`,
       { schema },
     );
+    // The runtime fallback answered with tagged test output: block it unless
+    // the caller opted in (connection test) or the harness allows it (smoke/
+    // journey). The direct-API path above trusts the real API and is untouched.
+    if (!opts?.allowStubTag && !stubAllowed() && isStubTagged(value)) {
+      if (directError) return { ok: false, status: "error", message: `Direct Muse Spark 1.3 call failed (${directError}) and the fallback is test output, which is blocked — nothing dummy was saved. Check the key and Model API quota, then try again.` };
+      return stubBlocked();
+    }
     return { ok: true, value };
   } catch (e) {
     return { ok: false, status: "error", message: `Muse model call failed: ${String(e).slice(0, 160)}` };
@@ -610,13 +576,64 @@ function llmHashFor(text: string, profile: ProfileLike): string {
 }
 const LOW_CONFIDENCE = 60; // below this a lead goes to founder review, never straight to outreach
 
+// ─── Stage 2 semantic rerank: meaning, not words ───────────────────────────
+// The keyword gate decides what is ALLOWED in and BM25 orders words by
+// rarity; this stage orders by MEANING. One batched listwise Muse call
+// scores the top candidates against the pain in the founder's own words —
+// paraphrases ("lost my job, rent due") outrank keyword-stuffed decoys
+// ("help help giveaway help") that share surface words but no situation.
+// Pure prompt/score parsing (unit-tested); the only network is the single
+// runLlm call at the fusion site, which fails soft (lexical order stands,
+// the run says so) — the hunt never blocks on it.
+export const SEMANTIC_RERANK_CAP = 40;
+export function buildSemanticRerankPrompt(pain: string, audience: string, items: { key: string; title: string; body: string }[]): string {
+  const rendered = items
+    .map((c) => `--- CAND ${c.key}\n${(c.title ?? "").slice(0, 160)}\n${(c.body ?? "").slice(0, 400)}`)
+    .join("\n");
+  return `Score each candidate post below for SEMANTIC relevance to one person's problem — not word overlap. Two posts can share zero keywords and mean the same thing ("laid off, bills due" vs "lost my job and rent is due"); two posts can share many keywords and mean nothing alike (a giveaway post stuffed with "help" vs someone asking for help). Judge the SITUATION: is this person living the problem described? 100 = exactly this pain in their own words, right now. 50 = adjacent situation, maybe useful. 0 = unrelated, a showcase, ad, joke, or someone selling — no matter how many keywords match. Score every candidate, even the weak ones; relative order matters more than absolute numbers. Reply with ONLY this JSON object and no other text, no markdown, no explanation — the exact keys matter: {"scores": [{"key": "<the CAND key exactly as shown>", "score": 0-100}]}. Only the public post text follows.\nTarget problem — Audience: ${audience}\nPain: ${pain}\n\n${rendered}`;
+}
+const semanticRerankSchema = z.object({ scores: z.array(z.object({ key: z.string(), score: z.number() })).default([]) });
+// Clamp to 0-100, drop keys that were never candidates (the model must not
+// invent or rename entries). Missing keys simply stay unscored.
+export function parseSemanticScores(value: unknown, keys: Set<string>): Map<string, number> {
+  const parsed = semanticRerankSchema.parse(value);
+  const out = new Map<string, number>();
+  for (const s of parsed.scores) {
+    if (!keys.has(s.key) || out.has(s.key)) continue;
+    out.set(s.key, Math.max(0, Math.min(100, Math.round(s.score))));
+  }
+  return out;
+}
+
 // ─── Step 4 synthesis: Muse classification of waiting leads ───────────────
 // Shared by the classifyLeads action AND by searchLiveLeads, which runs this
 // automatically at the end of every search (workflow Step 3 → Step 4) so the
 // results a founder sees are always the synthesized, classified ones — never
 // raw, unclassified keyword hits. Returns counts + a human message.
 type ClassifyOutcome = { status: string; message: string; classified: number; cached: number; lowConfidence: number; needsReview: number };
-async function classifyForProfile(ctx: Ctx, profile: typeof schema.profiles.$inferSelect): Promise<ClassifyOutcome> {
+function buildClassifyPrompt(profile: ProfileLike, items: string, firstPass: { id: number; category: string; confidence: number; reason: string }[] | null): string {
+  const head = `Classify candidate seed users for a founder. The light pre-filter already confirmed a domain anchor from the profile is present in the post, plus a pain or workaround signal (or the post was a top anchored candidate passed up for your judgement) — that filter is only a safety net, NOT a relevance verdict: your classification is the real gate, so judge strictly and mark anchor-only showcases, ads and jokes irrelevant with low confidence. Your job is the judgement keywords can't do. For EACH post, return one result with its post id and judge: rightPerson (is this the target audience, in the situation described?), realPain (did they describe this pain in their own words, as their own current problem?), workaroundOrPaying (are they already hacking a workaround or paying for something imperfect?), recent (does it read as current/recent, not an old or hypothetical story?). category is one of: seed_user (right person + real pain), curious (interested or adjacent but no clear own pain), irrelevant (wrong person, selling something, joke, or not this pain). confidence is 0-100 — be honest: ambiguous posts get low confidence. Show HN launch announcements and founder pitches are irrelevant unless the author personally asks for help with this pain in their own words — describing a market problem ("difficult for young investors", "high entry barrier") is not the author's own pain. Some candidates come from forum thread titles only (no post body) — judge on the title alone; prefer curious unless the title itself shows the person's own pain. The quote MUST be copied word-for-word from the post; if no phrase supports the pain, use an empty string and lower the confidence. reason: one short sentence grounded in the post. Never invent a quote. Reply with ONLY this JSON object and no other text, no markdown, no explanation — the exact keys matter: {"results": [{"id": <the post id number from its --- POST header>, "category": "...", "confidence": 0-100, "reason": "...", "quote": "...", "rightPerson": true/false, "realPain": true/false, "workaroundOrPaying": true/false, "recent": true/false}]}. Only the public post text follows — no personal data beyond what the person posted.\nTarget profile — Audience: ${profile.audience}\nPain: ${profile.pain}\nWorkaround today: ${profile.workaround}\nProduct: ${profile.productName} — ${profile.productDesc}\n\n`;
+  if (!firstPass) return head + items;
+  const firstRead = firstPass.map((f) => "post " + f.id + " \u2192 " + f.category + " (" + f.confidence + "%): \u201c" + f.reason.slice(0, 200) + "\u201d").join("\n");
+  return "You are giving these posts a SECOND look as devil\u2019s advocate. The first read said:\n" + firstRead + "\nChallenge it: steelman the case that each person IS worth reaching \u2014 but only from their own words. Quote verbatim or leave the quote empty; a second look that invents pain is worse than a first look that missed it. If the words are not there, confirm irrelevant.\n\n" + head + items;
+}
+const classifySchema = z.object({ results: z.array(z.object({ id: z.number(), category: z.string().default("curious"), confidence: z.number().default(0), reason: z.string().default(""), quote: z.string().default(""), rightPerson: z.boolean().default(false), realPain: z.boolean().default(false), workaroundOrPaying: z.boolean().default(false), recent: z.boolean().default(false) })).default([]) });
+const judgeAgent = defineAgent({
+  name: "Judge",
+  goal: "Judge each candidate post against the profile: right person, real pain in their own words, workaround or paying, recent \u2014 with a verbatim quote or none.",
+  run: async (ctx, input: { profile: ProfileLike; items: string; batchIds: number[]; firstPass: { id: number; category: string; confidence: number; reason: string }[] | null }, _attempt) => {
+    const r = await runLlm(ctx, "small", buildClassifyPrompt(input.profile, input.items, input.firstPass), classifySchema);
+    if (!r.ok) return r;
+    return { ok: true, value: r.value };
+  },
+  validate: (v, input) => {
+    for (const o of v.results) if (!input.batchIds.includes(o.id)) return "result id " + o.id + " matches no post in this batch";
+    return null;
+  },
+});
+// Judge entry for every flow: the same batches, the same validator, traced
+// on the caller's run when there is one (manual Classify passes 0).
+async function classifyForProfile(ctx: Ctx, profile: typeof schema.profiles.$inferSelect, runId = 0): Promise<ClassifyOutcome> {
   const zero = { classified: 0, cached: 0, lowConfidence: 0, needsReview: 0 };
   const db = ctx.db<typeof schema>();
   const settings = await loadLlmSettings(ctx);
@@ -643,11 +660,17 @@ async function classifyForProfile(ctx: Ctx, profile: typeof schema.profiles.$inf
   for (let i = 0; i < pending.length; i += 8) {
     const batch = pending.slice(i, i + 8);
     const items = batch.map((l, j) => `--- POST ${j + 1} (id ${l.id}, channel ${l.channel}) ---\nTitle: ${l.title}\n${l.body.slice(0, 700)}`).join("\n");
-    const r = await runLlm(ctx, "small",
-      `Classify candidate seed users for a founder. The light pre-filter already confirmed a domain anchor from the profile is present in the post, plus a pain or workaround signal (or the post was a top anchored candidate passed up for your judgement) — that filter is only a safety net, NOT a relevance verdict: your classification is the real gate, so judge strictly and mark anchor-only showcases, ads and jokes irrelevant with low confidence. Your job is the judgement keywords can't do. For EACH post, return one result with its post id and judge: rightPerson (is this the target audience, in the situation described?), realPain (did they describe this pain in their own words, as their own current problem?), workaroundOrPaying (are they already hacking a workaround or paying for something imperfect?), recent (does it read as current/recent, not an old or hypothetical story?). category is one of: seed_user (right person + real pain), curious (interested or adjacent but no clear own pain), irrelevant (wrong person, selling something, joke, or not this pain). confidence is 0-100 — be honest: ambiguous posts get low confidence. Show HN launch announcements and founder pitches are irrelevant unless the author personally asks for help with this pain in their own words — describing a market problem ("difficult for young investors", "high entry barrier") is not the author's own pain. Some candidates come from forum thread titles only (no post body) — judge on the title alone; prefer curious unless the title itself shows the person's own pain. The quote MUST be copied word-for-word from the post; if no phrase supports the pain, use an empty string and lower the confidence. reason: one short sentence grounded in the post. Never invent a quote. Only the public post text follows — no personal data beyond what the person posted.\nTarget profile — Audience: ${profile.audience}\nPain: ${profile.pain}\nWorkaround today: ${profile.workaround}\nProduct: ${profile.productName} — ${profile.productDesc}\n\n${items}`,
-      z.object({ results: z.array(z.object({ id: z.number(), category: z.string().default("curious"), confidence: z.number().default(0), reason: z.string().default(""), quote: z.string().default(""), rightPerson: z.boolean().default(false), realPain: z.boolean().default(false), workaroundOrPaying: z.boolean().default(false), recent: z.boolean().default(false) })).default([]) }));
+    if (runId) await touchSearchRun(db, runId, "synthesizing", `Judge is reading batch ${Math.floor(i / 8) + 1} of ${Math.ceil(pending.length / 8)}…`);
+    const r = await judgeAgent.execute(ctx, { profile, items, batchIds: batch.map((l) => l.id), firstPass: null }, runId);
     if (!r.ok) { return { status: r.status, message: `${r.message} (${classified} lead${classified === 1 ? "" : "s"} classified before this batch.)`, classified, cached, lowConfidence, needsReview }; }
+    // The model sometimes repeats a post id across result objects — count and
+    // save each lead once, or the "synthesized" count inflates past the
+    // queue (e.g. 8 synthesized, 7 leads, Threads (0)).
+    const seenIds = new Set<number>();
+    const savedNow: { id: number; cat: string; conf: number; reason: string }[] = [];
     for (const o of r.value.results) {
+      if (seenIds.has(o.id)) continue;
+      seenIds.add(o.id);
       const lead = batch.find((l) => l.id === o.id);
       if (!lead) continue;
       const cat = ["seed_user", "curious", "irrelevant"].includes(o.category) ? o.category : "curious";
@@ -657,27 +680,106 @@ async function classifyForProfile(ctx: Ctx, profile: typeof schema.profiles.$inf
       const signals = JSON.stringify({ rightPerson: o.rightPerson, realPain: o.realPain, workaroundOrPaying: o.workaroundOrPaying, recent: o.recent });
       await db.update(schema.leads).set({ llmCategory: cat, llmConfidence: conf, llmReason: o.reason.slice(0, 300), llmQuote: quote.slice(0, 300), llmSignals: signals, llmHash: llmHashFor(`${lead.title} ${lead.body}`, profile), llmReviewed: 0, updatedAt: new Date() }).where(eq(schema.leads.id, lead.id));
       classified++;
+      savedNow.push({ id: lead.id, cat, conf, reason: o.reason });
       if (conf < LOW_CONFIDENCE) lowConfidence++;
       if (conf < LOW_CONFIDENCE || cat === "irrelevant") needsReview++;
+    }
+    // Ensemble second look for the unsure: the steelman prompt argues the
+    // other way, but adoption only ever upgrades on the person's own quoted
+    // words — a second look can rescue, never condemn. Counts stay honest:
+    // an upgrade that clears the bar un-counts its earlier hold flags.
+    const unsure = savedNow.filter((s) => s.conf < LOW_CONFIDENCE);
+    if (unsure.length) {
+      const rank = (c: string) => (c === "seed_user" ? 2 : c === "curious" ? 1 : 0);
+      const prior = new Map(savedNow.map((s) => [s.id, s]));
+      const items2 = unsure.map((s, j) => {
+        const l = batch.find((b) => b.id === s.id)!;
+        return `--- POST ${j + 1} (id ${l.id}, channel ${l.channel}) ---\nTitle: ${l.title}\n${l.body.slice(0, 700)}`;
+      }).join("\n");
+      const r2 = await judgeAgent.execute(ctx, { profile, items: items2, batchIds: unsure.map((s) => s.id), firstPass: unsure.map((s) => ({ id: s.id, category: s.cat, confidence: s.conf, reason: s.reason })) }, runId);
+      if (r2.ok) {
+        for (const o of r2.value.results) {
+          const lead = batch.find((l) => l.id === o.id);
+          const p = prior.get(o.id);
+          if (!lead || !p) continue;
+          const cat = ["seed_user", "curious", "irrelevant"].includes(o.category) ? o.category : "curious";
+          const conf = Math.max(0, Math.min(100, Math.round(o.confidence || 0)));
+          let quote = o.quote.trim();
+          if (quote && !normText(`${lead.title} ${lead.body}`).includes(normText(quote))) quote = "";
+          if (rank(cat) > rank(p.cat) && quote) {
+            const signals = JSON.stringify({ rightPerson: o.rightPerson, realPain: o.realPain, workaroundOrPaying: o.workaroundOrPaying, recent: o.recent });
+            await db.update(schema.leads).set({ llmCategory: cat, llmConfidence: conf, llmReason: o.reason.slice(0, 300), llmQuote: quote.slice(0, 300), llmSignals: signals, llmReviewed: 0, updatedAt: new Date() }).where(eq(schema.leads.id, lead.id));
+            if (p.conf < LOW_CONFIDENCE && conf >= LOW_CONFIDENCE) lowConfidence--;
+            if ((p.conf < LOW_CONFIDENCE || p.cat === "irrelevant") && !(conf < LOW_CONFIDENCE || cat === "irrelevant")) needsReview--;
+          }
+        }
+      }
     }
   }
   const bits = [`${classified} classified by your small Muse model`, cached ? `${cached} reused from cache` : "", lowConfidence ? `${lowConfidence} low-confidence (under ${LOW_CONFIDENCE}%)` : "", needsReview ? `${needsReview} held for your review before any outreach` : ""].filter(Boolean).join(" · ");
   return { status: "ok", message: classified || cached ? `Done — ${bits}. Every verdict shows its evidence and quote on the lead. Only classified leads can move to drafts and outreach; the rule-based score underneath is a pre-filter only.` : "The model returned no usable verdicts — no lead was cleared for outreach. Try again.", classified, cached, lowConfidence, needsReview };
 }
 
+// Drafter: the outreach specialist. Writes the first message in the
+// founder's voice, then checks its own tone. Validation is a backstop with
+// teeth: empty or bloated drafts retry once, then fail honestly — the
+// handler below never substitutes a template.
+const draftSchema = z.object({ draft: z.string(), toneCheck: z.string().default("") });
+const drafterAgent = defineAgent({
+  name: "Drafter",
+  goal: "Write a first outreach message in the founder's voice, then check its own tone — never post, only draft.",
+  run: async (ctx, input: { profile: typeof schema.profiles.$inferSelect; lead: typeof schema.leads.$inferSelect }, _attempt) => {
+    const p = input.profile, lead = input.lead;
+    const channelRules = lead.channel === "bluesky" ? "Bluesky: keep it under 280 characters, conversational, no hashtag spam." : lead.channel === "reddit_poc" || lead.channel === "reddit" ? "Reddit: respect community norms — no link dump on first touch, no hype, disclose that you built it." : lead.channel === "github" ? "GitHub: be brief and technical, acknowledge their issue specifically, never spam maintainers." : "Closed/DM channel: extra care — they didn't ask to be contacted; be short, easy to decline, no pressure.";
+    const r = await runLlm(ctx, "large",
+      `Write a first outreach message for a founder, then check your own work in the toneCheck field: one or two plain sentences on whether the draft sounds like a genuine founder asking for help (not a pitch blast or a template), whether it follows the channel rules, and anything the founder should fix before approving. You never post anything yourself.\nVoice: plain, honest, first person, no marketing language.\nChannel: ${lead.channel}. Channel rules: ${channelRules}\nRules for the draft: reference their specific post in their own words; say plainly the founder built something for this exact problem; ask for help trying it for one real task — a request for help, not a pitch; no link dump; under 90 words unless the channel rule above is stricter.\nProduct: ${p.productName} — ${p.productDesc}\nPain it addresses: ${p.pain}\nTheir post (by ${lead.author}): Title: ${lead.title}\n${lead.body.slice(0, 900)}`,
+      draftSchema);
+    if (!r.ok) return r;
+    return { ok: true, value: r.value };
+  },
+  validate: (v) => {
+    if (!v.draft.trim()) return "empty draft";
+    if (v.draft.trim().split(/\s+/).length > 120) return "draft over 120 words (prompt caps at 90)";
+    return null;
+  },
+});
+
+// Watcher: the cohort-loop specialist. Watches the invite/event/feedback
+// signals and proposes the single next experiment on the fixed
+// audience → message → problem order — never a PMF verdict. The lever order
+// itself stays deterministic code at the call site; only the experiment
+// prose is the agent's. Validation keeps the fixed lever fixed.
+const experimentSchema = z.object({ experiment: z.string().default("") });
+const watcherAgent = defineAgent({
+  name: "Watcher",
+  goal: "Propose the single next experiment the cohort signals point at — a next test, never a PMF verdict.",
+  run: async (ctx, input: { profile: typeof schema.profiles.$inferSelect; lever: string; rationale: string; signals: Record<string, number>; latestFb: string }, _attempt) => {
+    const p = input.profile;
+    const r = await runLlm(ctx, "small",
+      `Suggest ONE next experiment for a founder from cohort signals. Hard rules: you must NOT give a PMF score, a PMF verdict, or say whether they have product-market fit — the founder decides that. You must keep the lever you are given (audience, message, or problem) — the order is fixed. Write the experiment as one concrete paragraph: what to change, who it runs on, for how long, and which signal to watch. Ground it in the numbers given.\nLever (fixed): ${input.lever}\nWhy this lever: ${input.rationale}\nSignals: ${JSON.stringify(input.signals)}\nProfile: audience ${p.audience}; pain ${p.pain}; core action ${p.coreAction}\nLatest feedback summary (may be empty): ${input.latestFb.slice(0, 1500)}`,
+      experimentSchema);
+    if (!r.ok) return r;
+    return { ok: true, value: r.value };
+  },
+  validate: (v, input) => {
+    if (!v.experiment.trim()) return "empty experiment";
+    if (!v.experiment.toLowerCase().includes(input.lever.toLowerCase())) return `experiment drops the fixed lever "${input.lever}"`;
+    return null;
+  },
+});
+
 // ─── LLM search expansion (Step 3) ──────────────────────────────────────────
 // Before and during search, Muse generates an expansion plan from the
 // profile: query variants in the person's own language, related pain phrases
 // and adjacent problems, related communities/places and which channel each
 // maps to. HARD RULE: every expanded query must stay anchored to the
-// profile's domain — for a clustered profile (e.g. makeup) the query must
-// contain a real term from that cluster (makeup, foundation, eyeliner…);
-// for other profiles it must contain the plan's anchor term, which itself
-// must come from the profile text. Unanchored queries are dropped
+// profile's domain — every expanded query must contain the plan's anchor
+// term, which itself must come from the profile text. Unanchored queries
+// are dropped
 // server-side and counted — generic words alone never become a query, so
 // expansion can't bring back the old generic coding/Plex-type matches.
 type ExpansionQuery = { query: string; intent: string };
-type ExpansionCommunity = { name: string; where: string; channel: string; access: string; why: string };
+type ExpansionCommunity = { name: string; where: string; channel: string; access: string; why: string; site: string };
 type ExpansionPlan = {
   anchorTerm: string;
   queries: ExpansionQuery[];
@@ -741,6 +843,33 @@ export function ddgResults(html: string): DdgHit[] {
   return out;
 }
 
+// SearXNG: self-hosted metasearch, free forever, no key. Same DdgHit shape
+// so it feeds groupVenues unchanged. Default points at a local instance;
+// override with EARLYPROOF_SEARXNG_URL. An unreachable host fails fast under
+// the shared fetch policy (connection-refused, two quick retries at most).
+export function searxngUrl(): string {
+  return (process.env.EARLYPROOF_SEARXNG_URL ?? "http://localhost:8888").replace(/\/+$/, "");
+}
+export function parseSearxngResults(data: unknown): DdgHit[] {
+  const raw = asObj(data).results;
+  const rows = Array.isArray(raw) ? (raw as unknown[]) : [];
+  const out: DdgHit[] = [];
+  for (const r of rows) {
+    const o = asObj(r);
+    const url = String(o.url ?? "");
+    const title = String(o.title ?? "").replace(/\s+/g, " ").trim().slice(0, 200);
+    if (!/^https?:\/\//i.test(url) || !title) continue;
+    out.push({ url, title });
+    if (out.length >= 30) break;
+  }
+  return out;
+}
+export async function searxngSearch(query: string): Promise<DdgHit[]> {
+  const r = await fetchJson(`${searxngUrl()}/search?q=${encodeURIComponent(query)}&format=json&language=en&safesearch=1`);
+  if (!r.ok) return [];
+  return parseSearxngResults(r.data);
+}
+
 // Domains whose thread URLs map straight onto registry channels.
 const REGISTRY_DOMAINS: Record<string, string> = {
   "agingcare.com": "agingcare", "mumsnet.com": "mumsnet",
@@ -775,7 +904,7 @@ function labelFor(domain: string): string {
   const base = domain.replace(/^www\./, "").split(".").slice(-2, -1)[0] ?? domain;
   return base.charAt(0).toUpperCase() + base.slice(1);
 }
-async function verifyForumDomain(domain: string): Promise<DynamicVenue | null> {
+export async function verifyForumDomain(domain: string): Promise<DynamicVenue | null> {
   const cands = [`https://${domain}/sitemap.xml`, `https://${domain}/sitemap.php`, `https://${domain}/sitemap_index.xml`];
   for (const index of cands) {
     const r = await fetchText(index);
@@ -799,11 +928,46 @@ async function verifyForumDomain(domain: string): Promise<DynamicVenue | null> {
 export type DiscoveryFindings = {
   evidence: { channel: string; threads: number; samples: string[] }[];
   dynamic: DynamicVenue[];
-  venues: { name: string; where: string; why: string; url: string }[];
+  venues: { name: string; where: string; why: string; url: string; src: "web" | "plan" }[];
   // False when the web was never actually checked (throttled challenge page,
   // fetch failure) — the UI must say so instead of claiming coverage.
   webOk: boolean;
+  // Which backend served the evidence: "brave", "duckduckgo", or "" (none).
+  webVia: string;
 };
+// Brave Search API (keyed): the durable backend when free scraping is
+// throttled. GET /res/v1/web/search with X-Subscription-Token; the free tier
+// covers discovery volume (one query per profile, cached 2h like DDG).
+async function braveWebSearch(query: string, key: string): Promise<DdgHit[]> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 20000);
+  try {
+    const res = await fetch(`https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=10&safesearch=moderate`, {
+      headers: { "X-Subscription-Token": key, "Accept": "application/json" }, signal: ctrl.signal,
+    });
+    if (!res.ok) return [];
+    return parseBraveResults(await res.json());
+  } catch {
+    return [];
+  } finally {
+    clearTimeout(timer);
+  }
+}
+export function parseBraveResults(json: unknown): DdgHit[] {
+  const out: DdgHit[] = [];
+  const o = (json && typeof json === "object" ? json : {}) as Record<string, unknown>;
+  const web = (o.web && typeof o.web === "object" ? o.web : {}) as Record<string, unknown>;
+  const results = Array.isArray(web.results) ? web.results : [];
+  for (const r of results) {
+    if (out.length >= 30) break;
+    const rec = (r && typeof r === "object" ? r : {}) as Record<string, unknown>;
+    const url = typeof rec.url === "string" ? rec.url : "";
+    const title = typeof rec.title === "string" ? rec.title.replace(/\s+/g, " ").trim().slice(0, 200) : "";
+    if (!/^https?:\/\//i.test(url) || !title) continue;
+    out.push({ url, title });
+  }
+  return out;
+}
 // A profile's channel hunt belongs to its exact words: new profiles get a
 // cold hunt, and editing the text retires the old hunt automatically — a new
 // or edited profile can never see another (or older) profile's venues.
@@ -818,13 +982,43 @@ function discoveryCacheKey(profile: ProfileLike & { id: number }): string {
 }
 const discoveryCache = new Map<string, { at: number; data: DiscoveryFindings }>();
 export function clearDiscoveryCache(profileId: number) {
+  if (profileId < 0) { discoveryCache.clear(); return; } // backend changed — never serve the other backend's cache
   for (const k of [...discoveryCache.keys()]) if (k === `${profileId}` || k.startsWith(`${profileId}:`)) discoveryCache.delete(k);
+}
+// Domains Muse names in its expansion plan that no search engine has
+// verified: the plan is the lead, a live thread-sitemap check is the proof.
+// Registry forums are excluded (already covered); file extensions are not
+// domains. Pure — tested with fixtures.
+const PLAN_DOMAIN_RE = /\b((?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,})\b/gi;
+export function planDomains(plan: ExpansionPlan | null): { domain: string; name: string }[] {
+  const out: { domain: string; name: string }[] = [];
+  const seen = new Set<string>();
+  for (const c of plan?.communities ?? []) {
+    PLAN_DOMAIN_RE.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = PLAN_DOMAIN_RE.exec(`${c.name} ${c.where}`))) {
+      const raw = m[1] ?? "";
+      if (!raw) continue;
+      const domain = raw.toLowerCase().replace(/^www\./, "");
+      if (seen.has(domain) || (REGISTRY_DOMAINS as Record<string, string>)[domain]) continue;
+      if (/\.(png|jpg|jpeg|gif|css|js|ico)$/.test(domain)) continue;
+      seen.add(domain);
+      out.push({ domain, name: c.name });
+    }
+  }
+  return out;
+}
+function planHash(plan: ExpansionPlan | null): string {
+  const s = (plan?.communities ?? []).map((c) => `${c.name}|${c.where}`).join("~");
+  let h = 5381;
+  for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) >>> 0;
+  return h.toString(36);
 }
 
 function discoveryAnchor(profile: ProfileLike): string {
-  return (activeClusters(profile)[0]?.terms[0])
-    ?? profile.keywords.split(",").map((s) => s.trim()).filter(Boolean)[0]
-    ?? profile.productDesc.trim().split(" ").slice(0, 4).join(" ");
+  return anchorTermsFor(profile).anchorTerm
+    || profile.keywords.split(",").map((s) => s.trim()).filter(Boolean)[0]
+    || profile.productDesc.trim().split(" ").slice(0, 4).join(" ");
 }
 // One query per discovery: DDG throttles bursts (HTTP 202 challenge page),
 // so a single combined query plus a long cache keeps discovery alive across
@@ -836,21 +1030,41 @@ function discoveryQuery(profile: ProfileLike): string {
   return `${anchor} ${pain} ${profile.audience.trim()} forum thread discussion`.trim();
 }
 
-export async function discoverVenuesFor(profile: ProfileLike & { id: number }): Promise<DiscoveryFindings> {
-  const key = discoveryCacheKey(profile);
+async function braveKeyFor(ctx: Ctx): Promise<string> {
+  const s = await loadLlmSettings(ctx);
+  return s?.braveKey.trim() ?? "";
+}
+export async function discoverVenuesFor(profile: ProfileLike & { id: number }, braveKey = "", plan: ExpansionPlan | null = null): Promise<DiscoveryFindings> {
+  const key = `${discoveryCacheKey(profile)}:${braveKey ? "b" : "d"}:p${planHash(plan)}`;
   const hit = discoveryCache.get(key);
   if (hit && Date.now() - hit.at < DISCOVERY_TTL_MS) return hit.data;
-  const data: DiscoveryFindings = { evidence: [], dynamic: [], venues: [], webOk: false };
+  const data: DiscoveryFindings = { evidence: [], dynamic: [], venues: [], webOk: false, webVia: "" };
   const anchor = discoveryAnchor(profile);
-  const page = await fetchText(`https://html.duckduckgo.com/html/?q=${encodeURIComponent(discoveryQuery(profile))}`, { headers: { "User-Agent": DDG_UA } });
-  if (page.status !== 200) return data;
-  const groups = groupVenues(ddgResults(page.text));
+  // Keyed backend first (works from throttled networks); free self-hosted
+  // SearXNG second (no key, no throttle when you run it locally); free DDG
+  // scraping last. Either way, failures are never cached.
+  let groups: VenueGroup[] = [];
+  if (braveKey) {
+    const hits = await braveWebSearch(discoveryQuery(profile), braveKey);
+    if (hits.length) { groups = groupVenues(hits); data.webVia = "brave"; }
+  }
+  if (!groups.length) {
+    const hits = await searxngSearch(discoveryQuery(profile));
+    if (hits.length) { groups = groupVenues(hits); data.webVia = "searxng"; }
+  }
+  if (!groups.length) {
+    const page = await fetchText(`https://html.duckduckgo.com/html/?q=${encodeURIComponent(discoveryQuery(profile))}`, { headers: { "User-Agent": DDG_UA } });
+    if (page.status !== 200) return data;
+    if (!ddgResults(page.text).length && page.text.includes("challenge")) return data;
+    groups = groupVenues(ddgResults(page.text));
+    if (groups.length) data.webVia = "duckduckgo";
+  }
   const verifyTargets: VenueGroup[] = [];
   for (const g of groups) {
     const reg = REGISTRY_DOMAINS[g.domain];
     if (reg) { data.evidence.push({ channel: reg, threads: g.urls.length, samples: g.titles.slice(0, 2) }); continue; }
     if (g.sub) {
-      data.venues.push({ name: `r/${g.sub}`, where: "Reddit", why: `Web search found ${g.urls.length} thread${g.urls.length === 1 ? "" : "s"} about '${anchor}' here — e.g. “${g.titles[0]}”. No public API: join and add by hand (or connect the Reddit POC).`, url: `https://www.reddit.com/r/${g.sub}/` });
+      data.venues.push({ name: `r/${g.sub}`, where: "Reddit", why: `Web search found ${g.urls.length} thread${g.urls.length === 1 ? "" : "s"} about '${anchor}' here — e.g. “${g.titles[0]}”. No public API: join and add by hand (or connect the Reddit POC).`, url: `https://www.reddit.com/r/${g.sub}/`, src: "web" });
       continue;
     }
     if (g.domain.endsWith(".stackexchange.com") || g.domain === "stackoverflow.com") {
@@ -866,23 +1080,69 @@ export async function discoverVenuesFor(profile: ProfileLike & { id: number }): 
   for (const v of verified) if (v) { data.dynamic.push(v); verifiedDomains.add(v.domain); }
   for (const g of verifyTargets) {
     if (verifiedDomains.has(g.domain) || data.venues.length >= 6) continue;
-    data.venues.push({ name: labelFor(g.domain), where: g.domain, why: `Web search found ${g.urls.length} discussion thread${g.urls.length === 1 ? "" : "s"} about '${anchor}' here — e.g. “${g.titles[0]}”. No thread sitemap: join and add by hand.`, url: `https://${g.domain}/` });
+    data.venues.push({ name: labelFor(g.domain), where: g.domain, why: `Web search found ${g.urls.length} discussion thread${g.urls.length === 1 ? "" : "s"} about '${anchor}' here — e.g. “${g.titles[0]}”. No thread sitemap: join and add by hand.`, url: `https://${g.domain}/`, src: "web" });
   }
-  data.webOk = true;
+  // Coverage means actual result groups, not just an HTTP 200 — an empty
+  // result page (or a challenge page that parses to nothing) stays degraded.
+  data.webOk = groups.length > 0;
+  // The LLM's own venue hunt, verified without any search engine: domains
+  // Muse names in the plan get a live thread-sitemap check, so a throttled
+  // web search can't veto a place Muse mapped. Cap 2 — each check is up to
+  // 3 sitemap fetches against the forum itself, never a search engine.
+  if (plan) {
+    const novel = planDomains(plan).filter((d) => !data.dynamic.some((x) => x.domain === d.domain)).slice(0, 2);
+    const checked = await Promise.all(novel.map((d) => verifyForumDomain(d.domain)));
+    for (const v of checked) {
+      if (!v || data.dynamic.some((x) => x.domain === v.domain)) continue;
+      data.dynamic.push(v);
+    }
+  }
+  // Venue-graph one hop (structural, no cross-profile learning): SE
+  // related_sites for the plan's SE sites, homepage outlinks for verified
+  // dynamic forums. Fills join-by-hand venues only, under the same cap.
+  if (plan && data.venues.length < 6) {
+    const known = new Set<string>();
+    for (const v of data.venues) { try { known.add(registrable(new URL(v.url).hostname)); } catch { /* skip */ } }
+    for (const d of data.dynamic) known.add(registrable(d.domain));
+    const push = (name: string, where: string, why: string, url: string) => {
+      if (data.venues.length < 6) data.venues.push({ name, where, why, url, src: "web" });
+    };
+    try {
+      const seSites = seSitesFromPlan(plan).slice(0, 3);
+      if (seSites.length) {
+        const res = await fetchJson("https://api.stackexchange.com/2.3/sites?pagesize=500");
+        const items = (res.data as { items?: unknown })?.items;
+        const payload = { items: Array.isArray(items) ? items : [] };
+        for (const s of seSites) {
+          seGraphVenues(parseSeRelatedSites(payload, s), s, known, push);
+          if (data.venues.length >= 6) break;
+        }
+      }
+    } catch { /* graph is a bonus — search results stand alone */ }
+    if (data.venues.length < 6 && data.dynamic.length) {
+      const homes = await Promise.all(data.dynamic.slice(0, 3).map(async (f) => {
+        try {
+          const p = await fetchText(`https://${f.domain}/`);
+          return p.ok ? { domain: f.domain, html: p.text.slice(0, 200_000) } : null;
+        } catch { return null; }
+      }));
+      for (const h of homes) {
+        if (!h || data.venues.length >= 6) continue;
+        forumGraphVenues(extractOutlinkDomains(h.html, h.domain), h.domain, known, push);
+      }
+    }
+  }
   discoveryCache.set(key, { at: Date.now(), data });
   return data;
 }
 
-// Merge web evidence into static recs (pure, tested): forums with real
-// thread evidence are rescued from poor; article-type channels keep their
-// signal verdict (a Show HN showcase hit proves nothing about seekers).
-const FORUM_CHANNELS = new Set(["agingcare", "mumsnet", "makeuptalk", "lipstickalley", "eurobricks", "studentdoctor"]);
+// Merge web evidence into plan recs (pure, tested): thread counts and sample
+// titles attach to whatever channels the plan mapped.
 export function mergeDiscovery<T extends { channel: string; fit: ChannelFit; reasons: string[] }>(recs: T[], findings: DiscoveryFindings): T[] {
   for (const e of findings.evidence) {
     const r = recs.find((x) => x.channel === e.channel);
     if (!r) continue;
     r.reasons.push(`Web search found ${e.threads} discussion thread${e.threads === 1 ? "" : "s"} here about this pain${e.samples.length ? ` — e.g. “${e.samples.join("” · “")}”` : ""}.`);
-    if (r.fit === "poor" && FORUM_CHANNELS.has(e.channel) && e.threads >= 2) r.fit = "good";
   }
   return recs;
 }
@@ -892,43 +1152,16 @@ export function sortRecs<T extends { fit: ChannelFit; needsConnection: boolean; 
   return recs;
 }
 
-// ─── Profile-aware channel recommendations ────────────────────────────────
-// The app never defaults to the same channels for every product. Signals in
-// the founder's own profile text vote channels up or down, Muse's expansion
-// plan votes with the communities it maps, and per-profile mappings decide
-// whether Stack Exchange or a sitemap forum earns a place at all.
-const OPEN_SEARCH_CHANNELS = ["bluesky", "hackernews", "github", "stackexchange", "agingcare", "mumsnet", "makeuptalk", "lipstickalley", "eurobricks", "studentdoctor", "devto", "lobsters"];
-const DEV_SIGNALS = ["software", "developer", "developers", "programmer", "coding", "github", "api", "saas", "devtools", "open source", "pull request", "codebase", "deploy", "localhost", "npm", "startup", "indie hacker", "hacker news", "tech stack", "side project", "web app", "mobile app", "launch", "stack overflow", "debugging", "debug", "bootcamp"];
-const CAREER_SIGNALS = ["laid off", "layoff", "layoffs", "unemployed", "job search", "freelance", "freelancer", "side hustle", "passive income", "income", "career", "interview", "resume", "fired", "severance", "paycheck"];
-const ISSUE_SIGNALS = ["bug", "bugs", "error", "errors", "broken", "issue", "issues", "crash", "exception"];
-// Everyday-life topics whose biggest public conversations live on Reddit and
-// general social — not on developer channels.
-const LIFE_SIGNALS = ["parent", "parents", "baby", "kids", "pregnancy", "pregnant", "health", "patient", "caregiver", "dementia", "alzheimer", "medication", "meds", "wedding", "landlord", "tenant", "pet", "dog", "marriage", "divorce"];
-const FAMILY_SIGNALS = ["parent", "parents", "baby", "kids", "pregnancy", "pregnant", "caregiver", "dementia", "marriage", "divorce"];
-const MONEY_SIGNALS = ["income", "paycheck", "severance", "debt", "salary", "budget", "rent", "mortgage", "investing", "passive income"];
-// Buy/sell/recommerce topics: the watering holes are flipping and declutter
-// communities plus general social — never developer or expert channels.
-const MARKETPLACE_SIGNALS = ["marketplace", "second hand", "secondhand", "preloved", "pre-owned", "preowned", "thrift", "thrifting", "resale", "recommerce", "declutter", "decluttering", "classifieds", "for sale", "buy and sell", "flea market", "car boot", "buy nothing", "freecycle", "vinted", "depop", "ebay", "gumtree", "craigslist", "flipping"];
-// Verified 2026-11-01: no pet sitemap forum survived (PetForums.com
-// Cloudflare-walls its sitemap path; dogforums/catforum/petforums.co.uk/
-// paw-talk all serve stale indexes whose XML files 404; PetCoach is dead;
-// VetInfo is 9k static articles, not threads). Pets live on Stack Exchange
-// plus whatever web discovery finds per profile.
-const PET_SIGNALS = ["pet", "pets", "dog", "dogs", "puppy", "puppies", "cat", "cats", "kitten", "kittens", "pet food", "dog food", "cat food", "kibble", "vet", "veterinarian", "pet owner", "dog owner", "cat owner", "breed", "breeder"];
-// Home services: homeowners with repair pain talk on DIY Stack Exchange
-// (api.stackexchange.com site=diy, keyless — verified live 2026-11-02).
-// Thumbtack/Angi/Yelp are business directories without thread search;
-// Nextdoor and Facebook groups are closed — all stay venues, never channels.
-const HOME_SIGNALS = ["handyman", "handymen", "plumber", "plumbers", "plumbing", "electrician", "electricians", "hvac", "remodel", "remodeling", "renovation", "drywall", "home repair", "home improvement", "contractor", "faucet", "water heater", "repair", "repairs"];
+// ─── Channel recommendations: the plan is the only picker ─────────────────
+// There are no topic lists in this file — no signals, no per-vertical
+// mappings, no per-profile channels. Muse's expansion plan maps communities;
+// every open community it names becomes a searchable pill, every closed one
+// a connection, everything else a join-by-hand venue. The code below only
+// executes searches against whatever the plan picked.
 
-function countSignals(normHaystack: string, signals: string[]): number {
-  let n = 0;
-  for (const s of signals) if (containsTerm(normHaystack, normText(s))) n++;
-  return n;
-}
 
 export type ChannelFit = "best" | "good" | "poor";
-export type ChannelRec = { channel: string; label: string; fit: ChannelFit; reasons: string[]; needsConnection: boolean };
+export type ChannelRec = { channel: string; label: string; fit: ChannelFit; reasons: string[]; needsConnection: boolean; verified: boolean };
 const CHANNEL_LABELS: Record<string, string> = {
   bluesky: "Bluesky", hackernews: "Hacker News", github: "GitHub", stackexchange: "Stack Exchange",
   agingcare: "AgingCare", mumsnet: "Mumsnet", makeuptalk: "MakeupTalk", lipstickalley: "Lipstick Alley",
@@ -936,128 +1169,57 @@ const CHANNEL_LABELS: Record<string, string> = {
   devto: "Dev.to", lobsters: "Lobsters", reddit_poc: "Reddit · POC",
 };
 
+// Channels the server can execute with no topic knowledge: the search is
+// fully described by the plan plus the query — plus, for Stack Exchange, the
+// site slug Muse names in the community. Forums with a sitemap adapter join
+// as pills under their channel name when the plan names them; any other plan
+// community with a verifiable domain joins as forum:<slug> via discovery.
+const NATIVE_CHANNELS = new Set(["bluesky", "hackernews", "github", "stackexchange", "devto", "lobsters", "reddit_poc"]);
+
 export function channelRecsFor(profile: ProfileLike, plan: ExpansionPlan | null): { recs: ChannelRec[] } {
-  const hay = normText([profile.productName, profile.productDesc, profile.audience, profile.pain, profile.workaround, profile.keywords, profile.coreAction].join(" "));
-  const cluster = activeClusters(profile)[0];
-  const isDev = countSignals(hay, DEV_SIGNALS) >= 2;
-  const isCareer = countSignals(hay, CAREER_SIGNALS) >= 2;
-  const isLife = countSignals(hay, LIFE_SIGNALS) >= 2;
-  const isCommerce = countSignals(hay, MARKETPLACE_SIGNALS) >= 2;
-  const issueHits = countSignals(hay, ISSUE_SIGNALS);
-
-  const scores = new Map<string, { score: number; reasons: string[] }>();
-  const bump = (ch: string, delta: number, reason: string) => {
-    const r = scores.get(ch) ?? { score: 0, reasons: [] as string[] };
-    r.score += delta;
-    if (reason && !r.reasons.includes(reason)) r.reasons.push(reason);
-    scores.set(ch, r);
-  };
-  // Base: every open channel starts viable.
-  for (const ch of OPEN_SEARCH_CHANNELS) bump(ch, 0, "Open channel — searchable with no connection.");
-  // Muse's plan: each mapped community votes for its channel.
-  if (plan) {
-    for (const c of plan.communities) {
-      if (!c.name || !c.channel) continue;
-      const ch = c.channel.trim();
-      bump(ch, c.access === "closed" ? 1 : 2, `Muse mapped “${c.name}” here${c.why ? ` — ${c.why}` : ""}`);
-    }
+  void profile;
+  const recs: ChannelRec[] = [];
+  if (!plan) return { recs };
+  const seen = new Set<string>();
+  for (const c of plan.communities) {
+    // Muse writes "reddit" for subreddit communities; the executor (OAuth
+    // search) lives under "reddit_poc". Normalize at this boundary so a
+    // plan-named subreddit always becomes the Reddit pill instead of
+    // vanishing — it stays closed until the founder connects Reddit.
+    const raw = (c.channel ?? "").trim();
+    const ch = raw === "reddit" ? "reddit_poc" : raw;
+    if (!c.name || !ch || seen.has(ch)) continue;
+    if (!NATIVE_CHANNELS.has(ch) && !SITEMAP_FORUMS.some((f) => f.channel === ch)) continue;
+    seen.add(ch);
+    recs.push({
+      channel: ch,
+      label: CHANNEL_LABELS[ch] ?? ch,
+      fit: "good",
+      reasons: [`Muse mapped “${c.name}” here${c.why ? ` — ${c.why}` : ""}`],
+      needsConnection: ch === "reddit_poc",
+      verified: false,
+    });
   }
-  // Profile shape adjustments. Developer channels need developer evidence:
-  // GitHub issues are bug reports, and Hacker News is a tech conversation —
-  // neither is where non-technical audiences report pain. A Muse expansion
-  // plan can still upgrade a channel when it maps a real community there.
-  if (cluster) {
-    bump("hackernews", -2, `Your topic is ${cluster.label}, not tech — Ask HN-style threads rarely discuss it.`);
-    bump("github", -2, `Your topic is ${cluster.label} — GitHub issues are the wrong pool.`);
-  }
-  if (isDev) {
-    bump("hackernews", 2, "Developer audience — Hacker News is where they ask for help.");
-    bump("github", issueHits > 0 ? 2 : 1, issueHits > 0 ? "Developers report this pain as GitHub issues." : "Developer audience — adjacent issue talk lives here.");
-  } else {
-    bump("github", -2, "GitHub issues are bug reports — your people don't report this pain there.");
-    if (!isCareer && !isCommerce && !cluster) bump("hackernews", -1, "Hacker News rarely discusses this topic — a long shot unless your plan maps a community there.");
-  }
-  if (isCareer) {
-    bump("hackernews", 1, "Ask HN work threads exist for this kind of pain.");
-    bump("bluesky", 1, "Work-life talk is common on Bluesky.");
-    bump("reddit_poc", 1, "Career subreddits hold this conversation — needs your Reddit connection.");
-  }
-  if (isLife) {
-    bump("bluesky", 1, "Everyday-life talk is common on Bluesky.");
-    bump("reddit_poc", 1, "This conversation lives on Reddit most of all — needs your Reddit connection.");
-  }
-  if (isCommerce) {
-    bump("hackernews", 1, "Ask HN threads cover buying/selling used goods and marketplace mechanics — your early adopters read them.");
-    bump("bluesky", 1, "Buy/sell chatter is everyday social talk — it surfaces on Bluesky.");
-    bump("reddit_poc", 1, "Flipping/declutter/thrift subs hold this conversation — needs your Reddit connection.");
-  }
-  // Stack Exchange earns its place per profile, never by default: people ask
-  // exactly this kind of question on the mapped communities — or on none.
-  const seSites = stackSitesFor(profile);
-  if (seSites.length) bump("stackexchange", 2, `People ask exactly this kind of question on ${seSites.join(" + ")} — keyless search.`);
-  else bump("stackexchange", -1, "No Stack Exchange community matches this topic — it would search blindly.");
-  // Dev.to articles earn their place per profile like SE: mapped tags or nothing.
-  const dtTags = devtoTagsFor(profile);
-  if (dtTags.length) bump("devto", 2, `Dev.to '${dtTags.join(" + ")}' articles match this topic — keyless tag API.`);
-  else bump("devto", -1, "No Dev.to tags match this topic — it would search blindly.");
-  // Lobsters front page is working developers talking shop: dev profiles only.
-  if (lobstersFor(profile)) bump("lobsters", 2, "Lobsters front page is working developers talking shop — your people are there.");
-  else bump("lobsters", -1, "Lobsters is a developer conversation — your people aren't there.");
-  // Sitemap-indexed forums earn their place per profile like SE, each forum
-  // on its own: one forum mapping never shields the other from the blind
-  // penalty — a makeup profile mentioning moms must not keep AgingCare
-  // checked just because Mumsnet mapped on the same kin words.
-  const smMapped = new Map(sitemapForumsFor(profile).map((f) => [f.channel, f]));
-  for (const f of SITEMAP_FORUMS) {
-    const m = smMapped.get(f.channel);
-    if (m) bump(f.channel, 2, `Real threads on ${m.label} match this topic — keyless sitemap-title search, no connection needed.`);
-    else bump(f.channel, -1, `No ${f.label} threads match this topic — it would search blindly.`);
-  }
-
-  const recs: ChannelRec[] = [...scores.entries()].map(([channel, r]) => ({
-    channel,
-    label: CHANNEL_LABELS[channel] ?? channel,
-    fit: (r.score >= 2 ? "best" : r.score < 0 ? "poor" : "good") as ChannelFit,
-    reasons: r.reasons.length ? r.reasons : ["Named by your expansion plan."],
-    needsConnection: !OPEN_SEARCH_CHANNELS.includes(channel) && !channel.startsWith("forum:"),
-  }));
   return { recs: sortRecs(recs) };
 }
 
-// Stack Exchange per-profile site mapping (cap 2): the shared keyless quota
-// (~300 req/day/IP) is spent carefully, never on blind searches.
-export function stackSitesFor(profile: ProfileLike): string[] {
-  const hay = normText([profile.productName, profile.productDesc, profile.audience, profile.pain, profile.workaround, profile.keywords, profile.coreAction].join(" "));
+// Stack Exchange sites come only from Muse's plan: the community's `site`
+// field, or a stackexchange.com subdomain named in its name/where (cap 2).
+// A Stack Exchange community with no resolvable site never executes —
+// guessing a site would be a blind search wearing a lab coat.
+export function seSitesFromPlan(plan: ExpansionPlan | null): string[] {
   const sites: string[] = [];
-  if (countSignals(hay, DEV_SIGNALS) >= 2) sites.push("stackoverflow");
-  if (countSignals(hay, CAREER_SIGNALS) >= 2) sites.push("workplace", "freelancing");
-  if (countSignals(hay, FAMILY_SIGNALS) >= 2) sites.push("parenting");
-  if (countSignals(hay, MONEY_SIGNALS) >= 2) sites.push("money");
-  if (countSignals(hay, PET_SIGNALS) >= 2) sites.push("pets");
-  if (countSignals(hay, HOME_SIGNALS) >= 2) sites.push("diy");
-  return [...new Set(sites)].slice(0, 2);
+  for (const c of plan?.communities ?? []) {
+    if ((c.channel ?? "").trim() !== "stackexchange") continue;
+    const explicit = (c.site ?? "").trim().toLowerCase();
+    if (explicit && !sites.includes(explicit)) { sites.push(explicit); continue; }
+    const m = `${c.name} ${c.where}`.toLowerCase().match(/([a-z0-9-]+)\.stackexchange\.com/);
+    if (m?.[1] && !sites.includes(m[1])) sites.push(m[1]);
+  }
+  return sites.slice(0, 2);
 }
 
-// Dev.to per-profile tags (cap 2): the keyless articles API takes a tag, not
-// a query — recent articles under the tag are gated by the anchor, same as a
-// sitemap forum. Dev.to is developers talking shop plus career talk, so a
-// makeup profile maps no tag here, ever.
-export function devtoTagsFor(profile: ProfileLike): string[] {
-  const hay = normText([profile.productName, profile.productDesc, profile.audience, profile.pain, profile.workaround, profile.keywords, profile.coreAction].join(" "));
-  const tags: string[] = [];
-  if (countSignals(hay, DEV_SIGNALS) >= 2) tags.push("webdev", "programming");
-  if (countSignals(hay, CAREER_SIGNALS) >= 2) tags.push("career");
-  return [...new Set(tags)].slice(0, 2);
-}
-
-// Lobsters front page is working developers talking shop — no per-topic
-// query API exists, so mapping is signal-based: dev profiles only.
-export function lobstersFor(profile: ProfileLike): boolean {
-  const hay = normText([profile.productName, profile.productDesc, profile.audience, profile.pain, profile.workaround, profile.keywords, profile.coreAction].join(" "));
-  return countSignals(hay, DEV_SIGNALS) >= 2;
-}
-
-export function devtoCandidate(o: Record<string, unknown>, tag: string, profile: ProfileLike, profileId: number): { key: string; values: typeof schema.leads.$inferInsert; s: Relevance } | null {
+export function devtoCandidate(o: Record<string, unknown>, profile: ProfileLike, profileId: number): { key: string; values: typeof schema.leads.$inferInsert; s: Relevance } | null {
   const id = String(o.id ?? "");
   if (!id) return null;
   const user = asObj(o.user);
@@ -1070,7 +1232,7 @@ export function devtoCandidate(o: Record<string, unknown>, tag: string, profile:
       profileId, channel: "devto", mode: "live_post",
       externalUrl: String(o.url ?? ""), externalId: `devto:${id}`,
       author: String(user.username ?? user.name ?? ""), authorHandle: String(user.username ?? ""),
-      title, body, community: `Dev.to · ${tag}`,
+      title, body, community: "Dev.to",
       postedAt: String(o.published_at ?? o.created_at ?? ""),
       matchScore: s.score, matchReason: s.reason,
     },
@@ -1126,39 +1288,26 @@ export function seCandidate(o: Record<string, unknown>, site: string, profile: P
 // sitemap files (cached per section selection, polite UA, never /search,
 // never page bodies), de-slug to titles, and run the same gate. Leads are
 // TITLE-ONLY and say so in the reason; the founder verifies by opening the
-// thread. A forum is only searched when the profile's own signals map to it,
-// and only the topic sections matching the profile are fetched — never blindly.
-// Topic-defining signals count double; supporting kin/meds words count
-// single. Threshold: "dementia" + "mom" maps, but a profile that merely
-// mentions "mom and dad" (supporting only, no topic) does not.
-const ELDER_CORE = ["caregiver", "dementia", "alzheimer", "elderly", "hospice", "nursing home", "assisted living", "memory care"];
-const ELDER_KIN = ["mom", "mum", "mother", "dad", "daddy", "father", "parents", "meds", "medication", "respite", "senior care", "aging parent"];
-const MUMSNET_CORE = ["pregnancy", "pregnant", "breastfeeding", "newborn", "toddler", "miscarriage", "fertility", "postnatal"];
-const MUMSNET_KIN = ["baby", "babies", "parent", "parents", "mom", "mum", "dad", "kids", "children", "sleep", "feed", "feeding", "school", "nursery", "caregiver", "dementia", "meds", "money", "debt", "layoff", "unemployed"];
-// Beauty topics whose public conversation lives on beauty forums — verified
-// 2026-11-01: MakeupTalk (XenForo) exposes a thread-URL sitemap index.
-// Specktra was checked the same day and only lists its homepage — no good.
-const BEAUTY_CORE = ["makeup", "cosmetics", "cosmetic", "foundation", "eyeliner", "mascara", "lipstick", "blush", "concealer", "eyeshadow", "skincare", "skin care", "nail polish", "nails"];
-const BEAUTY_KIN = ["beauty", "beautician", "sephora", "ulta", "drugstore", "tutorial", "tutorials", "holy grail", "makeover", "beauty routine"];
-// Lego collectors: Eurobricks (IPS forum, sitemap index verified 2026-11-02 —
+// thread. Which forum executes is Muse's call alone (the plan names it);
+// this registry is only the address book — index URLs, section tokens, and
+// how to name a community from a URL. No topic words live here.
+// MakeupTalk (XenForo) exposes a thread-URL sitemap index (verified
+// 2026-11-01). Specktra was checked the same day and only lists its
+// homepage — no good.
+// Eurobricks (IPS forum, sitemap index verified 2026-11-02 —
 // Topic_1 carries the freshest threads, ~500/file, slugs in URLs). Brickset
 // has no forum any more (its /forum page points at Discord and Facebook),
 // so those stay join-by-hand venues, never a channel.
-const LEGO_CORE = ["lego", "legos", "afol", "duplo", "bricklink", "minifigure", "minifig"];
-const LEGO_KIN = ["collector", "collectors", "collecting", "collection", "rare set", "retired set", "limited edition", "technic", "sealed set", "minifigures"];
-// Doctors: Student Doctor Network (XenForo, verified 2026-11-02 — newest
+// Student Doctor Network (XenForo, verified 2026-11-02 — newest
 // thread files are sitemap-24 then sitemap-23; higher files hold member
 // profiles, which self-filter by title length). Sermo and Doximity are
 // login-walled; KevinMD is article comments, not threads — venues only.
-const MED_CORE = ["doctor", "doctors", "physician", "physicians", "nurse", "nurses", "medical student", "medical school", "scribe", "residency", "prescription"];
-const MED_KIN = ["patient", "patients", "clinic", "clinical", "dosage", "diagnosis", "symptom"];
-// A section is one slice of a forum's sitemap worth fetching for a matching
-// profile: `token` must appear in the sitemap file's URL (slash-delimited so
-// "/talk/parenting/" never matches "eco-friendly-parenting"), `signals`
-// narrows it to the profile (null = the whole forum already mapped, as with
-// AgingCare's Q&A/Discussions split).
-export type SitemapSection = { token: string; signals: string[] | null };
-export type SitemapForum = { channel: string; label: string; index: string; sections: SitemapSection[]; core: string[]; kin: string[]; minScore: number; maxFiles: number; communityFor: (url: string) => string; needsCore?: boolean };
+// A section is one slice of a forum's sitemap: `token` must appear in the
+// sitemap file's URL (slash-delimited so "/talk/parenting/" never matches
+// "eco-friendly-parenting"). Every listed section fetches when the plan
+// picks the forum; the anchor gate keeps off-topic threads out.
+export type SitemapSection = { token: string };
+export type SitemapForum = { channel: string; label: string; index: string; sections: SitemapSection[]; maxFiles: number; communityFor: (url: string) => string };
 function mumsnetCommunity(url: string): string {
   const m = url.match(/\/talk\/([^/]+)\//);
   const topic = (m?.[1] ?? "").replace(/[_-]+/g, " ").trim();
@@ -1168,96 +1317,86 @@ const SITEMAP_FORUMS: SitemapForum[] = [
   {
     channel: "agingcare", label: "AgingCare",
     index: "https://www.agingcare.com/sitemaps/sitemap.xml",
-    sections: [{ token: "content-questions", signals: null }, { token: "content-discussions", signals: null }],
+    maxFiles: 6,
+    sections: [{ token: "content-questions" }, { token: "content-discussions" }],
     communityFor: (url) => (url.includes("/discussions/") ? "AgingCare Discussions" : "AgingCare Q&A"),
-    core: ELDER_CORE, kin: ELDER_KIN, minScore: 3, maxFiles: 6,
   },
   {
     channel: "mumsnet", label: "Mumsnet",
     index: "https://www.mumsnet.com/sitemap/talk",
+    maxFiles: 10,
     sections: [
-      { token: "/talk/parenting/", signals: ["parent", "baby", "toddler", "children", "kids"] },
-      { token: "/talk/sleep/", signals: ["sleep", "night", "nap", "tired", "feed", "routine"] },
-      { token: "/talk/pregnancy/", signals: ["pregnancy", "pregnant", "fertility", "conception"] },
-      { token: "/talk/breast_and_bottle_feeding/", signals: ["breastfeed", "bottle", "formula", "feed", "milk"] },
-      { token: "/talk/childrens_health/", signals: ["health", "doctor", "fever", "rash", "ill", "gp"] },
-      { token: "/talk/general_health/", signals: ["health", "doctor", "fever", "rash", "ill", "gp"] },
-      { token: "/talk/behaviour_development/", signals: ["behaviour", "behavior", "tantrum", "development", "milestone"] },
-      { token: "/talk/elderly_parents/", signals: ["elderly", "dementia", "caregiver", "care home"] },
-      { token: "/talk/money-matters/", signals: ["money", "debt", "budget", "rent", "mortgage", "salary"] },
-      { token: "/talk/work/", signals: ["layoff", "laid off", "unemployed", "interview", "resume", "freelance"] },
-      { token: "/talk/childcare/", signals: ["childcare", "nursery", "nanny", "childminder"] },
+      { token: "/talk/parenting/" },
+      { token: "/talk/sleep/" },
+      { token: "/talk/pregnancy/" },
+      { token: "/talk/breast_and_bottle_feeding/" },
+      { token: "/talk/childrens_health/" },
+      { token: "/talk/general_health/" },
+      { token: "/talk/behaviour_development/" },
+      { token: "/talk/elderly_parents/" },
+      { token: "/talk/money-matters/" },
+      { token: "/talk/work/" },
+      { token: "/talk/childcare/" },
     ],
     communityFor: mumsnetCommunity,
-    core: MUMSNET_CORE, kin: MUMSNET_KIN, minScore: 2, maxFiles: 10,
   },
   {
     channel: "makeuptalk", label: "MakeupTalk",
     index: "https://www.makeuptalk.com/sitemap.php",
+    maxFiles: 2,
     // XenForo numbers content files sequentially as they fill, oldest first —
     // sitemap-4/sitemap-3 are the newest files verified 2026-11-01 (sitemap-1
     // starts at 2003 threads). Substring matching also covers sitemap-40+.
     // If the forum grows past sitemap-9 without a bump here, newer files are
     // skipped gracefully — older threads still searched, never blind.
-    sections: [{ token: "sitemap-4", signals: null }, { token: "sitemap-3", signals: null }],
+    sections: [{ token: "sitemap-4" }, { token: "sitemap-3" }],
     communityFor: () => "MakeupTalk",
-    core: BEAUTY_CORE, kin: BEAUTY_KIN, minScore: 2, maxFiles: 2,
   },
   {
     channel: "lipstickalley", label: "Lipstick Alley",
     index: "https://www.lipstickalley.com/sitemap.php",
+    maxFiles: 2,
     // Same XenForo sequential scheme, newest last — sitemap-43/42 verified
     // 2026-11-01 against a 43-file index (file 1 starts years back).
     // Lipstick Alley is mostly gossip, not beauty: the anchor gate keeps
     // off-topic threads out, same as every forum here.
-    sections: [{ token: "sitemap-43", signals: null }, { token: "sitemap-42", signals: null }],
+    sections: [{ token: "sitemap-43" }, { token: "sitemap-42" }],
     communityFor: () => "Lipstick Alley",
-    core: BEAUTY_CORE, kin: BEAUTY_KIN, minScore: 2, maxFiles: 2,
   },
   {
     channel: "eurobricks", label: "Eurobricks",
     index: "https://www.eurobricks.com/forum/sitemap.php",
+    maxFiles: 4,
     // IPS index of ~300 Topic_N files; Topic_1 carries the freshest threads
     // (highest topic ids), so index order is fetch order and maxFiles bounds
     // the pull to a few thousand fresh threads.
-    sections: [{ token: "sitemap_content_forums_Topic_", signals: null }],
+    sections: [{ token: "sitemap_content_forums_Topic_" }],
     communityFor: () => "Eurobricks",
-    core: LEGO_CORE, kin: LEGO_KIN, minScore: 2, maxFiles: 4,
   },
   {
     channel: "studentdoctor", label: "Student Doctor Network",
     index: "https://forums.studentdoctor.net/sitemap.php",
+    maxFiles: 2,
     // XenForo oldest-first: sitemap-24/sitemap-23 are the newest thread
     // files (higher files hold member profiles, which self-filter by title
     // length). File numbers roll as the forum grows — re-verify yearly.
-    sections: [{ token: "sitemap-24", signals: null }, { token: "sitemap-23", signals: null }],
+    sections: [{ token: "sitemap-24" }, { token: "sitemap-23" }],
     communityFor: () => "Student Doctor Network",
-    core: MED_CORE, kin: MED_KIN, minScore: 2, maxFiles: 2,
-    needsCore: true,
   },
 ];
-export function sitemapForumsFor(profile: ProfileLike): SitemapForum[] {
-  const hay = normText([profile.productName, profile.productDesc, profile.audience, profile.pain, profile.workaround, profile.keywords, profile.coreAction].join(" "));
-  // A clustered topic (e.g. makeup) vetoes kin-only mapping: "mom", "sleep"
-  // or "money" in a makeup profile are ordinary-life words, not evidence the
-  // founder's people talk on caregiver/parenting forums. A real topic overlap
-  // (e.g. pregnancy-safe makeup) still maps via core terms.
-  const clustered = activeClusters(profile).length > 0;
-  return SITEMAP_FORUMS.filter((f) => {
-    const coreHits = countSignals(hay, f.core);
-    if (clustered && coreHits === 0) return false;
-    // needsCore forums (doctors, not doctors-adjacent): kin words like
-    // "patient" also appear in family caregiving, so kin alone never maps.
-    if (f.needsCore && coreHits === 0) return false;
-    return coreHits * 2 + countSignals(hay, f.kin) >= f.minScore;
-  });
+// Address-book lookup by channel name. The plan picks the channel; this only
+// resolves it to fetch instructions. Unknown names return null and the
+// search errors honestly instead of guessing.
+export function forumAdapter(channel: string): SitemapForum | null {
+  return SITEMAP_FORUMS.find((f) => f.channel === channel) ?? null;
 }
-// Section filter (pure, tested): which sitemap files deserve a fetch for
-// THIS profile. Runs at every index level, so one code path serves flat
-// sitemaps (AgingCare) and nested topic indexes (Mumsnet).
-export function filterSitemapLocs(forum: SitemapForum, locs: string[], profile: ProfileLike): string[] {
-  const hay = normText([profile.productName, profile.productDesc, profile.audience, profile.pain, profile.workaround, profile.keywords, profile.coreAction].join(" "));
-  return locs.filter((u) => forum.sections.some((s) => u.includes(s.token) && (!s.signals || countSignals(hay, s.signals) >= 1)));
+// Section filter (pure, tested): which sitemap files deserve a fetch. Runs at
+// every index level, so one code path serves flat sitemaps (AgingCare) and
+// nested topic indexes (Mumsnet). No profile input — every listed section
+// fetches when the plan picks the forum; the anchor gate drops off-topic
+// threads downstream.
+export function filterSitemapLocs(forum: SitemapForum, locs: string[]): string[] {
+  return locs.filter((u) => forum.sections.some((s) => u.includes(s.token)));
 }
 // Minimal sitemap reader (no XML library — sitemaps are a flat shape):
 // `<url><loc>…</loc><lastmod>…</lastmod></url>`, same for `<sitemap>` index rows.
@@ -1291,10 +1430,10 @@ export type SitemapEntry = { url: string; title: string; lastmod: string; commun
 const sitemapCache = new Map<string, { at: number; entries: SitemapEntry[] }>();
 const SITEMAP_TTL_MS = 24 * 3600 * 1000;
 const SITEMAP_MAX_ENTRIES = 60000;
-async function fetchSitemapEntries(forum: SitemapForum, profile: ProfileLike): Promise<{ entries: SitemapEntry[] } | { error: string }> {
+async function fetchSitemapEntries(forum: SitemapForum): Promise<{ entries: SitemapEntry[] } | { error: string }> {
   const idx0 = await fetchText(forum.index);
   if (!idx0.ok) return { error: `Sitemap index unreachable (HTTP ${idx0.status}).` };
-  let level0 = filterSitemapLocs(forum, sitemapLocs(idx0.text, "sitemap").map((e) => e.loc), profile);
+  let level0 = filterSitemapLocs(forum, sitemapLocs(idx0.text, "sitemap").map((e) => e.loc));
   // Flat sitemap (no index — the file itself lists threads, as discovered
   // for small forums): search the file itself instead of sections.
   if (!level0.length && idx0.text.includes("<urlset")) level0 = [forum.index];
@@ -1321,7 +1460,7 @@ async function fetchSitemapEntries(forum: SitemapForum, profile: ProfileLike): P
       fetches++;
       if (!r.ok) continue; // one bad file doesn't sink the channel
       if (r.text.includes("<sitemapindex")) {
-        for (const u of filterSitemapLocs(forum, sitemapLocs(r.text, "sitemap").map((e) => e.loc), profile)) {
+        for (const u of filterSitemapLocs(forum, sitemapLocs(r.text, "sitemap").map((e) => e.loc))) {
           if (u !== forum.index && !next.includes(u)) next.push(u);
         }
       } else {
@@ -1345,10 +1484,9 @@ export function dynamicForumFor(channel: string, findings: DiscoveryFindings): S
   const d = findings.dynamic.find((v) => v.slug === slug);
   if (!d) return null;
   return {
-    channel, label: d.label, index: d.index,
-    sections: d.flat ? [{ token: d.index, signals: null }] : d.files.map((f) => ({ token: f, signals: null })),
+    channel, label: d.label, index: d.index, maxFiles: 2,
+    sections: d.flat ? [{ token: d.index }] : d.files.map((f) => ({ token: f })),
     communityFor: () => d.label,
-    core: [], kin: [], minScore: 0, maxFiles: 2,
   };
 }
 export function sitemapCandidate(entry: SitemapEntry, forum: SitemapForum, profile: ProfileLike, profileId: number): { key: string; values: typeof schema.leads.$inferInsert; s: Relevance } | null {
@@ -1390,12 +1528,9 @@ async function ensureFollowup(db: Db, leadId: number, profileId: number): Promis
 }
 
 function anchorTermsFor(profile: ProfileLike): { anchorTerm: string; terms: string[] } {
-  const clusters = activeClusters(profile);
-  const first = clusters[0];
-  if (first) return { anchorTerm: first.label, terms: first.terms.map((t) => normText(t)).filter(Boolean) };
-  // No known cluster: the anchor set is every specific anchor token derived
-  // from the profile (keywords first, then audience, then pain — see
-  // profileAnchorTokens). Previously only the FIRST keyword word counted,
+  // The anchor set is every specific anchor token derived from the profile
+  // (keywords first, then audience, then pain — see profileAnchorTokens).
+  // Previously only the FIRST keyword word counted,
   // so an expanded query about "no traction" or "first feedback" was
   // dropped as "unanchored" for lacking the word "users" — another silent
   // 100%-drop path. Now any real anchor token anchors a query; the display
@@ -1437,9 +1572,37 @@ const expansionPlanSchema = z.object({
   painPhrases: z.preprocess(stringishArray, z.array(z.string())).default([]),
   adjacentProblems: z.preprocess(stringishArray, z.array(z.string())).default([]),
   adjacentAudiences: z.preprocess(stringishArray, z.array(z.string())).default([]),
-  communities: z.array(z.object({ name: z.string(), where: z.string().default(""), channel: z.string().default("manual"), access: z.string().default("open"), why: z.string().default("") })).default([]),
+  communities: z.array(z.object({ name: z.string(), where: z.string().default(""), channel: z.string().default("manual"), access: z.string().default("open"), why: z.string().default(""), site: z.string().default("") })).default([]),
   relaxations: z.preprocess(stringishArray, z.array(z.string())).default([]),
   nextSuggestions: z.preprocess(stringishArray, z.array(z.string())).default([]),
+});
+
+// Pure prompt construction (unit-tested): every topic word in this prompt
+// comes from the founder's profile or the derived anchor terms. No vertical,
+// product, or venue examples are baked in — the plan Muse writes is picked
+// per profile, never steered to a hardcoded community.
+export function buildExpansionPrompt(
+  profile: ProfileLike,
+  args: { painPhrasesSaved: string[]; anchorTerm: string; terms: string[]; isLaterRound: boolean; round: number; context: { reason: string; found: number; discarded: number; synthesized: number; seenCount: number }; previousQueries: string[] },
+): string {
+  const { painPhrasesSaved, anchorTerm, terms, isLaterRound, round, context, previousQueries } = args;
+  return `You are planning WHERE to find seed users for a founder — not just rewording one keyword. Build a search expansion plan from this target profile.\n\nProfile — Product: ${profile.productName} — ${profile.productDesc}\nAudience: ${profile.audience}\nPain (founder's words): ${profile.pain}\nWorkaround today: ${profile.workaround}\nFounder keywords: ${profile.keywords}\nCore action: ${profile.coreAction}\nPain phrases already known: ${painPhrasesSaved.join(" · ") || "(none yet)"}\n\nDOMAIN ANCHOR (hard rule): the anchor term is "${anchorTerm}". Valid anchor terms for queries: ${terms.join(", ")}. EVERY query you return MUST contain at least one of those anchor terms, word-for-word. A query made only of generic words (like "skill", "struggle", "help", "sucks", "beginner") is forbidden — unanchored queries are discarded server-side. If you broaden, broaden the pain/audience/community around the anchor, never drop the anchor.\n\nReturn:\n- anchorTerm: exactly "${anchorTerm}".\n- queries: ${isLaterRound ? "6-8" : "5-7"} search queries a real person in pain might match — variants and synonyms in the person's own language, each with a one-line intent. Cover different phrasings of the pain, the workaround, and beginner/first-time framings — all anchored.\n- painPhrases: 5-8 related pain phrases and adjacent problem phrasings in their words (these inform the founder; they are not all queries).\n- adjacentProblems: 3-5 adjacent problems the same person hits around this pain.\n- adjacentAudiences: 3-5 adjacent audiences — people one step wider than the profile who plausibly hit the same anchored pain.\n- communities: 5-8 specific places these people already talk — name the actual thread or group, not the platform in general (e.g. a specific subreddit's new-posts feed, a named forum's Q&A board, an Ask HN thread). For each: name, where (the site's domain when it is a forum or website — otherwise the platform or place), channel — one of bluesky, hackernews, github, stackexchange, agingcare, mumsnet, makeuptalk, lipstickalley, eurobricks, studentdoctor, devto, lobsters, reddit_poc, reddit, x, facebook, discord, slack, linkedin, instagram, youtube (stackexchange only for Q&A-style communities WITH the site slug in site — look at the pain and pick the site whose questions match, using the real slug from that site's stackexchange.com subdomain; devto only for developer articles; lobsters only for developer discussion) — site: the Stack Exchange site slug when channel is stackexchange, else blank — access: "open" for a public searchable community EarlyProof searches by default, "closed" when the founder must provide an API/connection or join and send themselves — and why this place fits this profile's pain.\n- relaxations: 2-4 specific over-strict terms or exact phrases from the profile/keywords that could be relaxed WITHOUT dropping the anchor (name the exact term and what to relax it to).\n- nextSuggestions: 3-5 concrete next expansion moves if this round still returns 0 synthesized results — broaden to an adjacent audience or adjacent pain (still anchored), try a different named channel or community, relax a named over-strict term.\n${isLaterRound ? `\nThis is expansion round ${round}. The previous search context: ${context.reason} It found ${context.found} candidates, the pre-filter dropped ${context.discarded}, Muse synthesized ${context.synthesized} results, and ${context.seenCount} leads are already seen (new results are deduplicated against them — do not repeat old queries). Previous rounds already tried these queries: ${previousQueries.join(" · ") || "(none)"}. Your new queries must be DIFFERENT from those: lean on the adjacent audiences, adjacent pains, new communities and the relaxations — while keeping every query anchored to "${anchorTerm}".` : `\nThis is expansion round 1, generated before the search runs.`}`;
+}
+
+// Scout: the plan-mapping specialist. Wraps one expansion round behind the
+// agent interface so the hunt gets a name, a goal, and a run trace. No
+// validator here on purpose: the round's own anchor filter plus the zod
+// schema already reject bad plans, and a second opinion would only repeat
+// the same deterministic check. (Venue discovery stays a plain function —
+// it is deterministic fetch/parse/verify with no model judgement to wrap.)
+const scoutPlanAgent = defineAgent({
+  name: "Scout",
+  goal: "Map where the profile's people talk: anchored queries plus the communities they name.",
+  run: async (ctx, input: { profile: typeof schema.profiles.$inferSelect; context: { reason: string; found: number; discarded: number; synthesized: number; seenCount: number } }, attempt) => {
+    const gen = await generateExpansionRound(ctx, input.profile, input.context, { runId: attempt.runId });
+    if (!gen.ok) return gen;
+    return { ok: true, value: { plan: gen.plan, round: gen.round } };
+  },
 });
 
 // Generates one expansion round with Muse and stores it. `previous` carries
@@ -1450,6 +1613,7 @@ async function generateExpansionRound(
   ctx: Ctx,
   profile: typeof schema.profiles.$inferSelect,
   context: { reason: string; found: number; discarded: number; synthesized: number; seenCount: number },
+  opts?: { runId?: number },
 ): Promise<{ ok: true; plan: ExpansionPlan; round: number } | LlmFail> {
   const db = ctx.db<typeof schema>();
   const settings = await loadLlmSettings(ctx);
@@ -1461,10 +1625,11 @@ async function generateExpansionRound(
     .map((r) => { try { return JSON.parse(r.plan || "{}") as Partial<ExpansionPlan>; } catch { return {} as Partial<ExpansionPlan>; } });
   const previousQueries = previousPlans.flatMap((p) => (p.queries ?? []).map((q) => q.query)).filter(Boolean);
   const { anchorTerm, terms } = anchorTermsFor(profile);
+  if (opts?.runId) await touchSearchRun(db, opts.runId, "planning", `Round ${round}: asking Muse for anchored queries (anchor “${anchorTerm}”)…`);
   const painPhrasesSaved: string[] = (() => { try { const v = JSON.parse(profile.painPhrases || "[]") as unknown; return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : []; } catch { return []; } })();
   const isLaterRound = round > 1;
   const r = await runLlm(ctx, "small",
-    `You are planning WHERE to find seed users for a founder — not just rewording one keyword. Build a search expansion plan from this target profile.\n\nProfile — Product: ${profile.productName} — ${profile.productDesc}\nAudience: ${profile.audience}\nPain (founder's words): ${profile.pain}\nWorkaround today: ${profile.workaround}\nFounder keywords: ${profile.keywords}\nCore action: ${profile.coreAction}\nPain phrases already known: ${painPhrasesSaved.join(" · ") || "(none yet)"}\n\nDOMAIN ANCHOR (hard rule): the anchor term is "${anchorTerm}". Valid anchor terms for queries: ${terms.join(", ")}. EVERY query you return MUST contain at least one of those anchor terms, word-for-word. A query made only of generic words (like "skill", "struggle", "help", "sucks", "beginner") is forbidden — unanchored queries are discarded server-side. If you broaden, broaden the pain/audience/community around the anchor, never drop the anchor.\n\nReturn:\n- anchorTerm: exactly "${anchorTerm}".\n- queries: ${isLaterRound ? "6-8" : "5-7"} search queries a real person in pain might match — variants and synonyms in the person's own language, each with a one-line intent. Cover different phrasings of the pain, the workaround, and beginner/first-time framings — all anchored.\n- painPhrases: 5-8 related pain phrases and adjacent problem phrasings in their words (these inform the founder; they are not all queries).\n- adjacentProblems: 3-5 adjacent problems the same person hits around this pain.\n- adjacentAudiences: 3-5 adjacent audiences — people one step wider than the profile who plausibly hit the same anchored pain.\n- communities: 5-8 specific places these people already talk — name the actual kind of place (e.g. for a beauty profile: beginner makeup subreddits, beauty forums, tutorial comment sections, beginner beauty groups/hashtags; for a caregiver profile: AgingCare Q&A and Discussions threads, Mumsnet elderly_parents threads). For each: name, where (platform/place), channel — one of bluesky, hackernews, github, stackexchange, agingcare, mumsnet, makeuptalk, lipstickalley, eurobricks, studentdoctor, devto, lobsters, reddit_poc, reddit, x, facebook, discord, slack, linkedin, instagram, youtube (use stackexchange only for Q&A-style communities, agingcare for caregiver/elder-care forum threads, mumsnet for parenting/family forum threads, makeuptalk or lipstickalley for beauty/makeup/cosmetics forum threads, eurobricks for Lego/AFOL collector forum threads, studentdoctor for doctor/physician/resident forum threads, devto for developer or career articles by tag, lobsters for developer front-page discussion) — access: "open" if it is a public searchable channel EarlyProof searches by default, "closed" if the founder must provide an API/connection or join and send themselves, and why this place fits.\n- relaxations: 2-4 specific over-strict terms or exact phrases from the profile/keywords that could be relaxed WITHOUT dropping the anchor (name the exact term and what to relax it to).\n- nextSuggestions: 3-5 concrete next expansion moves if this round still returns 0 synthesized results — broaden to an adjacent audience or adjacent pain (still anchored), try a different named channel or community, relax a named over-strict term.\n${isLaterRound ? `\nThis is expansion round ${round}. The previous search context: ${context.reason} It found ${context.found} candidates, the pre-filter dropped ${context.discarded}, Muse synthesized ${context.synthesized} results, and ${context.seenCount} leads are already seen (new results are deduplicated against them — do not repeat old queries). Previous rounds already tried these queries: ${previousQueries.join(" · ") || "(none)"}. Your new queries must be DIFFERENT from those: lean on the adjacent audiences, adjacent pains, new communities and the relaxations — while keeping every query anchored to "${anchorTerm}".` : `\nThis is expansion round 1, generated before the search runs.`}`,
+    buildExpansionPrompt(profile, { painPhrasesSaved, anchorTerm, terms, isLaterRound, round, context, previousQueries }),
     expansionPlanSchema);
   if (!r.ok) return r;
   const o = r.value;
@@ -1485,6 +1650,7 @@ async function generateExpansionRound(
       channel: ["bluesky", "hackernews", "github", "stackexchange", "agingcare", "mumsnet", "makeuptalk", "lipstickalley", "eurobricks", "studentdoctor", "devto", "lobsters", "reddit_poc", "reddit", "x", "facebook", "discord", "slack", "linkedin", "instagram", "youtube", "manual"].includes(c.channel.trim()) ? c.channel.trim() : "manual",
       access: c.access.trim().toLowerCase() === "closed" ? "closed" : "open",
       why: c.why.trim().slice(0, 240),
+      site: (c.site ?? "").trim().toLowerCase().slice(0, 40),
     })).filter((c) => c.name),
     relaxations: cleanStrs(o.relaxations, 4),
     nextSuggestions: cleanStrs(o.nextSuggestions, 5),
@@ -1500,9 +1666,12 @@ async function generateExpansionRound(
 
 // The latest stored plan for a profile, generating round 1 on demand so a
 // first search always runs expanded queries, not just the founder's keyword.
+// Scout entry for the search flow: reuse a stored plan, or map one now and
+// trace the attempt on the caller's run.
 async function ensureExpansionPlan(
   ctx: Ctx,
   profile: typeof schema.profiles.$inferSelect,
+  runId = 0,
 ): Promise<{ ok: true; plan: ExpansionPlan; round: number; generated: boolean } | LlmFail> {
   const db = ctx.db<typeof schema>();
   const existing = await db.select().from(schema.searchExpansions).where(eq(schema.searchExpansions.profileId, profile.id));
@@ -1513,9 +1682,9 @@ async function ensureExpansionPlan(
       if (Array.isArray(plan.queries) && plan.queries.length) return { ok: true, plan, round: latest.round, generated: false };
     } catch { /* fall through and regenerate */ }
   }
-  const gen = await generateExpansionRound(ctx, profile, { reason: "First search for this profile — no expansion plan exists yet.", found: 0, discarded: 0, synthesized: 0, seenCount: 0 });
+  const gen = await scoutPlanAgent.execute(ctx, { profile, context: { reason: "First search for this profile — no expansion plan exists yet.", found: 0, discarded: 0, synthesized: 0, seenCount: 0 } }, runId);
   if (!gen.ok) return gen;
-  return { ok: true, plan: gen.plan, round: gen.round, generated: true };
+  return { ok: true, plan: gen.value.plan, round: gen.value.round, generated: true };
 }
 
 function expansionShape(e: typeof schema.searchExpansions.$inferSelect) {
@@ -1584,13 +1753,247 @@ async function ensureReddit(ctx: Ctx): Promise<{ access: string; handle: string 
 // `found` counts each unique candidate once, and `discarded` is exactly
 // found − (candidates passed to Muse) − (candidates already stored), so
 // discarded can never exceed found the way the old per-occurrence count did.
-async function runChannelSearch(
+
+type SearcherResult = { cands: { key: string; values: typeof schema.leads.$inferInsert; s: Relevance }[]; errors: { channel: string; message: string }[] };
+type SearcherInput = { ctx: Ctx; profile: typeof schema.profiles.$inferSelect; queries: string[]; subreddits: string; seSites: string[]; execPlan: ExpansionPlan | null; budget: { take: (n?: number) => boolean } };
+type ForumSearcherInput = SearcherInput & { ch: string };
+// Shared per-run API budget: today's per-channel caps never bind it (worst
+// case ~29 calls), so current behavior is unchanged — it only stops a
+// future blowup from spending a shared quota twice.
+const SEARCH_BUDGET_CALLS = 40;
+function makeCallBudget(total: number): { take: (n?: number) => boolean; left: () => number } {
+  let remaining = total;
+  return { take: (n = 1) => { if (remaining < n) return false; remaining -= n; return true; }, left: () => remaining };
+}
+
+async function searchChannelStackExchange(input: SearcherInput): Promise<SearcherResult> {
+  const { profile, queries, seSites, budget } = input;
+  const cands: SearcherResult["cands"] = [];
+  const errors: SearcherResult["errors"] = [];
+  const pushCand = (key: string, values: typeof schema.leads.$inferInsert, s: Relevance) => cands.push({ key, values, s });
+      // Stack Exchange: keyless full-text question search across the sites
+      // Muse named in the plan (site slug per community) — never a hardcoded
+      // list. Shared free quota (~300 req/day/IP): two queries per site.
+      if (!seSites.length) { errors.push({ channel: "Stack Exchange", message: "Muse's plan named no Stack Exchange site for this profile — re-generate the plan with a site slug, or uncheck it." }); return { cands, errors }; }
+      let failed = false;
+      for (const site of seSites) {
+        for (const query of queries.slice(0, 2)) {
+          if (failed) break;
+          if (!budget.take()) { errors.push({ channel: "Stack Exchange", message: "Shared search budget for this run is spent — retry with fewer channels." }); failed = true; continue; }
+          const r = await fetchJson(`https://api.stackexchange.com/2.3/search/advanced?order=desc&sort=relevance&q=${encodeURIComponent(query)}&site=${site}&filter=withbody&pagesize=20`);
+          const d = asObj(r.data);
+          if (!r.ok) { errors.push({ channel: "Stack Exchange", message: d.error_id === 502 ? "Stack Exchange throttled the shared free quota — retry later today." : `Search failed (HTTP ${r.status}).` }); failed = true; continue; }
+          if (((d.quota_remaining as number | undefined) ?? 1) === 0) { errors.push({ channel: "Stack Exchange", message: "Stack Exchange free quota exhausted for today — retry tomorrow." }); failed = true; continue; }
+          const items = (d.items as unknown[]) ?? [];
+          for (const it of items.slice(0, 20)) {
+            const c = seCandidate(asObj(it), site, profile, profile.id);
+            if (!c) continue;
+            pushCand(c.key, c.values, c.s);
+          }
+        }
+      }
+  return { cands, errors };
+}
+
+async function searchChannelForums(input: ForumSearcherInput): Promise<SearcherResult> {
+  const { ctx, profile, execPlan, ch } = input;
+  const cands: SearcherResult["cands"] = [];
+  const errors: SearcherResult["errors"] = [];
+  const pushCand = (key: string, values: typeof schema.leads.$inferInsert, s: Relevance) => cands.push({ key, values, s });
+      // Sitemap-indexed forums: no API, no RSS, bot-disallowed /search — but
+      // public sitemaps with thread titles in the slugs. Scored title-only;
+      // the candidate reason says so, and the founder verifies by opening
+      // the thread. Runs only when Muse picked the forum (adapter) or
+      // discovery verified it (forum:<slug>); anything else errors below.
+      let forums: SitemapForum[];
+      if (ch.startsWith("forum:")) {
+        let findings: DiscoveryFindings | null = null;
+        try { findings = await discoverVenuesFor(profile, await braveKeyFor(ctx), execPlan); } catch { findings = null; }
+        const dyn = findings ? dynamicForumFor(ch, findings) : null;
+        if (!dyn) { errors.push({ channel: ch, message: "This discovered venue is no longer verified — reload the Channels step to re-run channel discovery." }); return { cands, errors }; }
+        forums = [dyn];
+      } else {
+        // Named forum adapter (Muse picked the channel): the registry is only
+        // the address book — index URLs and section tokens, no topic words.
+        const adapter = forumAdapter(ch);
+        if (!adapter) { errors.push({ channel: ch, message: "Unknown forum channel — pick it from the Channels step lineup." }); return { cands, errors }; }
+        forums = [adapter];
+      }
+      for (const forum of forums) {
+        const r = await fetchSitemapEntries(forum);
+        if ("error" in r) { errors.push({ channel: forum.label, message: r.error }); continue; }
+        for (const e of r.entries) {
+          const c = sitemapCandidate(e, forum, profile, profile.id);
+          if (!c) continue;
+          pushCand(c.key, c.values, c.s);
+        }
+      }
+  return { cands, errors };
+}
+
+async function searchChannelHackerNews(input: SearcherInput): Promise<SearcherResult> {
+  const { profile, queries, budget } = input;
+  const cands: SearcherResult["cands"] = [];
+  const errors: SearcherResult["errors"] = [];
+  const pushCand = (key: string, values: typeof schema.leads.$inferInsert, s: Relevance) => cands.push({ key, values, s });
+      let failed = false;
+      // Every profile searches Hacker News the same way: help-request
+      // phrasing against the ask_hn tag with relevance ranking, Ask-HN-titled
+      // posts only. "Show HN" showcases are founders announcing, not seekers
+      // asking — the title gate excludes them before the pre-filter for all
+      // profiles alike, so they are never counted as found or discarded.
+      // This also drops comment hits (they carry no story title).
+      for (const query of queries.slice(0, 5)) {
+          if (!budget.take()) { errors.push({ channel: "Hacker News", message: "Shared search budget for this run is spent — retry with fewer channels." }); failed = true; continue; }
+        const url = `https://hn.algolia.com/api/v1/search?query=${encodeURIComponent(query)}&tags=ask_hn&hitsPerPage=12`;
+        const r = await fetchJson(url);
+        if (!r.ok) { if (!failed) errors.push({ channel: "Hacker News", message: `Search failed (HTTP ${r.status}). Try again.` }); failed = true; continue; }
+        const hits = (asObj(r.data).hits as unknown[]) ?? [];
+        for (const h of hits.slice(0, 12)) {
+          const o = asObj(h);
+          const oid = String(o.objectID ?? "");
+          const title = String(o.title ?? "");
+          if (hnTitleKind(title) !== "ask") continue;
+          const text = String(o.story_text ?? o.title ?? "");
+          const clean = decodeHnText(text).slice(0, 900);
+          const s = analyseText(title + " " + clean, profile, "hackernews");
+          pushCand(`hn:${oid}`, { profileId: profile.id, channel: "hackernews", mode: "live_search", externalUrl: `https://news.ycombinator.com/item?id=${oid}`, externalId: oid, author: String(o.author ?? ""), authorHandle: String(o.author ?? ""), title, body: clean, postedAt: String(o.created_at ?? ""), matchScore: s.score, matchReason: s.reason }, s);
+        }
+      }
+  return { cands, errors };
+}
+
+async function searchChannelGitHub(input: SearcherInput): Promise<SearcherResult> {
+  const { profile, queries, budget } = input;
+  const cands: SearcherResult["cands"] = [];
+  const errors: SearcherResult["errors"] = [];
+  const pushCand = (key: string, values: typeof schema.leads.$inferInsert, s: Relevance) => cands.push({ key, values, s });
+      let failed = false;
+      for (const query of queries.slice(0, 3)) {
+        if (failed) break; // rate-limited: stop spending the free search budget
+          if (!budget.take()) { errors.push({ channel: "GitHub", message: "Shared search budget for this run is spent — retry with fewer channels." }); failed = true; continue; }
+        const q = `${query} in:title,body state:open`;
+        const r = await fetchJson(`https://api.github.com/search/issues?q=${encodeURIComponent(q)}&per_page=10&sort=created&order=desc`, { headers: { Accept: "application/vnd.github+json" } });
+        if (!r.ok) { errors.push({ channel: "GitHub", message: r.status === 403 ? "GitHub free search rate limit hit (10/min unauthenticated). Wait a minute and retry." : `Search failed (HTTP ${r.status}).` }); failed = true; continue; }
+        const items = (asObj(r.data).items as unknown[]) ?? [];
+        for (const it of items) {
+          const o = asObj(it); const user = asObj(o.user);
+          if (o.pull_request) continue; // PRs are not posts; not counted as candidates at all
+          const title = String(o.title ?? ""); const bodyTxt = String(o.body ?? "").slice(0, 900);
+          // Full-body analysis only. The old head check (title + first 300
+          // chars needing an exact/context phrase) discarded GitHub
+          // candidates before their full text was ever scored — removed.
+          const s = analyseText(title + " " + bodyTxt, profile, "github");
+          const repoUrl = String(o.repository_url ?? ""); const repo = repoUrl.replace("https://api.github.com/repos/", "");
+          pushCand(`gh:${String(o.id ?? "")}`, { profileId: profile.id, channel: "github", mode: "live_post", externalUrl: String(o.html_url ?? ""), externalId: String(o.id ?? ""), author: String(user.login ?? ""), authorHandle: String(user.login ?? ""), title, body: bodyTxt, community: repo, postedAt: String(o.created_at ?? ""), matchScore: s.score, matchReason: s.reason }, s);
+        }
+      }
+  return { cands, errors };
+}
+
+async function searchChannelDevto(input: SearcherInput): Promise<SearcherResult> {
+  const { profile, budget } = input;
+  const cands: SearcherResult["cands"] = [];
+  const errors: SearcherResult["errors"] = [];
+  const pushCand = (key: string, values: typeof schema.leads.$inferInsert, s: Relevance) => cands.push({ key, values, s });
+      // Dev.to has no keyless search API: the latest articles are gated title
+      // by title, same honest pattern as the sitemap forums and Lobsters.
+      // Muse picks whether this channel executes at all.
+      if (!budget.take()) { errors.push({ channel: "Dev.to", message: "Shared search budget for this run is spent — retry with fewer channels." }); return { cands, errors }; }
+      const r = await fetchJson("https://dev.to/api/articles?per_page=40");
+      if (!r.ok) { errors.push({ channel: "Dev.to", message: `Search failed (HTTP ${r.status}). Try again.` }); return { cands, errors }; }
+      const articles = Array.isArray(r.data) ? r.data : [];
+      for (const a of articles) {
+        const c = devtoCandidate(asObj(a), profile, profile.id);
+        if (!c) continue;
+        pushCand(c.key, c.values, c.s);
+      }
+  return { cands, errors };
+}
+
+async function searchChannelLobsters(input: SearcherInput): Promise<SearcherResult> {
+  const { profile, budget } = input;
+  const cands: SearcherResult["cands"] = [];
+  const errors: SearcherResult["errors"] = [];
+  const pushCand = (key: string, values: typeof schema.leads.$inferInsert, s: Relevance) => cands.push({ key, values, s });
+      // Lobsters newest.json: no per-topic query API, so the front page is
+      // gated title-by-title, same honest pattern as the sitemap forums.
+      if (!budget.take()) { errors.push({ channel: "Lobsters", message: "Shared search budget for this run is spent — retry with fewer channels." }); return { cands, errors }; }
+      const r = await fetchJson("https://lobste.rs/newest.json");
+      if (!r.ok) { errors.push({ channel: "Lobsters", message: `Search failed (HTTP ${r.status}). Try again.` }); return { cands, errors }; }
+      const stories = Array.isArray(r.data) ? r.data : [];
+      for (const st of stories) {
+        const c = lobstersCandidate(asObj(st), profile, profile.id);
+        if (!c) continue;
+        pushCand(c.key, c.values, c.s);
+      }
+  return { cands, errors };
+}
+
+async function searchChannelBluesky(input: SearcherInput): Promise<SearcherResult> {
+  const { ctx, profile, queries, budget } = input;
+  const cands: SearcherResult["cands"] = [];
+  const errors: SearcherResult["errors"] = [];
+  const pushCand = (key: string, values: typeof schema.leads.$inferInsert, s: Relevance) => cands.push({ key, values, s });
+      const sess = await ensureBsky(ctx);
+      if (!sess) { errors.push({ channel: "Bluesky", message: "Bluesky is not connected. Connect your free Bluesky account in Channels to search posts." }); return { cands, errors }; }
+      let failed = false;
+      for (const query of queries.slice(0, 5)) {
+          if (!budget.take()) { errors.push({ channel: "Bluesky", message: "Shared search budget for this run is spent — retry with fewer channels." }); failed = true; continue; }
+        const r = await fetchJson(`https://bsky.social/xrpc/app.bsky.feed.searchPosts?q=${encodeURIComponent(query)}&limit=15&sort=latest`, { headers: { Authorization: `Bearer ${sess.accessJwt}` } });
+        if (!r.ok) { if (!failed) errors.push({ channel: "Bluesky", message: `Search failed (HTTP ${r.status}). Your session may have expired — reconnect in Channels.` }); failed = true; continue; }
+        const posts = (asObj(r.data).posts as unknown[]) ?? [];
+        for (const p of posts.slice(0, 10)) {
+          const o = asObj(p); const author = asObj(o.author); const record = asObj(o.record);
+          const uri = String(o.uri ?? ""); const rkey = uri.split("/").pop() ?? "";
+          const handle = String(author.handle ?? "");
+          const text = String(record.text ?? "").slice(0, 900);
+          const s = analyseText(text, profile, "bluesky");
+          pushCand(`bsky:${uri}`, { profileId: profile.id, channel: "bluesky", mode: "live_post", externalUrl: `https://bsky.app/profile/${handle}/post/${rkey}`, externalId: uri, externalUri: uri, externalCid: String(o.cid ?? ""), author: String(author.displayName ?? handle), authorHandle: handle, title: "", body: text, postedAt: String(record.createdAt ?? o.indexedAt ?? ""), matchScore: s.score, matchReason: s.reason }, s);
+        }
+      }
+  return { cands, errors };
+}
+
+async function searchChannelReddit(input: SearcherInput): Promise<SearcherResult> {
+  const { ctx, profile, queries, subreddits, budget } = input;
+  const cands: SearcherResult["cands"] = [];
+  const errors: SearcherResult["errors"] = [];
+  const pushCand = (key: string, values: typeof schema.leads.$inferInsert, s: Relevance) => cands.push({ key, values, s });
+      const subs = subreddits.split(/[,\s]+/).map((s) => s.trim().replace(/^r\//, "")).filter(Boolean).slice(0, 5);
+      if (!subs.length) { errors.push({ channel: "Reddit POC", message: "Enter at least one subreddit (max 5) for the POC search." }); return { cands, errors }; }
+      const sess = await ensureReddit(ctx);
+      if ("error" in sess) { errors.push({ channel: "Reddit POC", message: sess.error }); return { cands, errors }; }
+      // On-demand only, sequential, deduplicated in the leads table — total
+      // calls capped at 10 per run, far under the 100/min free-tier limit.
+      let calls = 0;
+      for (const sub of subs) {
+        for (const query of queries.slice(0, 3)) {
+          if (calls >= 10) break;
+          if (!budget.take()) { errors.push({ channel: "Reddit POC", message: "Shared search budget for this run is spent — retry with fewer channels." }); break; }
+          calls++;
+          const url = `https://oauth.reddit.com/r/${encodeURIComponent(sub)}/search?q=${encodeURIComponent(query)}&restrict_sr=on&sort=new&t=month&limit=10`;
+          const r = await fetchJson(url, { headers: { Authorization: `Bearer ${sess.access}` } });
+          if (!r.ok) { errors.push({ channel: "Reddit POC", message: `r/${sub} search failed (HTTP ${r.status}). Check the subreddit name and your POC connection.` }); continue; }
+          const children = (asObj(asObj(r.data).data).children as unknown[]) ?? [];
+          for (const c of children) {
+            const d = asObj(asObj(c).data);
+            const fullname = String(d.name ?? "");
+            const title = String(d.title ?? ""); const self = String(d.selftext ?? "").slice(0, 900);
+            const s = analyseText(title + " " + self, profile, "reddit_poc");
+            pushCand(`rd:${fullname}`, { profileId: profile.id, channel: "reddit_poc", mode: "live_post", externalUrl: `https://www.reddit.com${String(d.permalink ?? "")}`, externalId: fullname, author: String(d.author ?? ""), authorHandle: String(d.author ?? ""), title, body: self, community: `r/${sub}`, postedAt: d.created_utc ? new Date(Number(d.created_utc) * 1000).toISOString() : "", matchScore: s.score, matchReason: s.reason }, s);
+          }
+        }
+      }
+  return { cands, errors };
+}
+export async function runChannelSearch(
   ctx: Ctx,
   profile: typeof schema.profiles.$inferSelect,
   channels: string[],
   subreddits: string,
   queries: string[],
-): Promise<{ created: number; found: number; discarded: number; pruned: number; promoted: number; errors: { channel: string; message: string }[] }> {
+): Promise<{ created: number; found: number; discarded: number; pruned: number; promoted: number; errors: { channel: string; message: string }[]; semanticApplied: boolean; semanticMessage: string }> {
   const db = ctx.db<typeof schema>();
   let pruned = 0;
   const existingAll = await db.select().from(schema.leads).where(eq(schema.leads.profileId, profile.id));
@@ -1601,10 +2004,10 @@ async function runChannelSearch(
     // because the rules re-score it differently.
     if (l.status === "new" && !l.llmCategory && (l.mode === "live_post" || l.mode === "live_search")) {
       const a = analyseText(`${l.title} ${l.body}`, profile, l.channel);
-      // FirstFeedback HN retune: a stored unclassified HN lead whose title
-      // does not start with "Ask HN" (e.g. an old Show HN showcase from a
-      // pre-retune run) can never be an HN candidate for this profile again.
-      const hnExcluded = l.channel === "hackernews" && isFirstFeedbackProfile(profile) && hnTitleKind(l.title) !== "ask";
+      // Hacker News searches Ask HN only (see below): a stored unclassified
+      // HN lead whose title does not start with "Ask HN" (e.g. an old Show HN
+      // showcase) can never be an HN candidate again.
+      const hnExcluded = l.channel === "hackernews" && hnTitleKind(l.title) !== "ask";
       if (!a.keep || hnExcluded) { await db.delete(schema.leads).where(eq(schema.leads.id, l.id)); pruned++; }
     }
   }
@@ -1619,6 +2022,15 @@ async function runChannelSearch(
   // author's handle (which can change), while the post URI in externalId does
   // not. Checking only the URL lets a re-scraped post through as "new".
   const seen = new Set([...existing.map((l) => l.externalUrl), ...existing.map((l) => l.externalId)].filter(Boolean));
+  // The expansion plan drives execution: SE sites and forum picks resolve
+  // from what Muse mapped — never from per-profile tables in this file.
+  let execPlan: ExpansionPlan | null = null;
+  try {
+    const existingPlans = await db.select().from(schema.searchExpansions).where(eq(schema.searchExpansions.profileId, profile.id));
+    const latestRow = existingPlans.sort((a, b) => b.round - a.round)[0];
+    execPlan = latestRow ? parseExpansionPlan(latestRow.plan || "{}") : null;
+  } catch { execPlan = null; }
+  const seSites = seSitesFromPlan(execPlan);
   const errors: { channel: string; message: string }[] = [];
 
   type Cand = { key: string; values: typeof schema.leads.$inferInsert; score: number; keep: boolean; anchorPresent: boolean; reason: string };
@@ -1630,192 +2042,81 @@ async function runChannelSearch(
     candidates.set(key, { key, values, score: s.score, keep: s.keep, anchorPresent: s.anchorPresent, reason: s.reason });
   };
 
-  for (const ch of channels) {
-    if (ch === "stackexchange") {
-      // Stack Exchange: keyless full-text question search, but ONLY across
-      // the communities that fit THIS profile (mapped from its signals, never
-      // hardcoded). Shared free quota (~300 req/day/IP): two queries per site.
-      const sites = stackSitesFor(profile);
-      if (!sites.length) { errors.push({ channel: "Stack Exchange", message: "No Stack Exchange community matches this profile's topic — skipped instead of searching blindly." }); continue; }
-      let failed = false;
-      for (const site of sites) {
-        for (const query of queries.slice(0, 2)) {
-          if (failed) break;
-          const r = await fetchJson(`https://api.stackexchange.com/2.3/search/advanced?order=desc&sort=relevance&q=${encodeURIComponent(query)}&site=${site}&filter=withbody&pagesize=20`);
-          const d = asObj(r.data);
-          if (!r.ok) { errors.push({ channel: "Stack Exchange", message: d.error_id === 502 ? "Stack Exchange throttled the shared free quota — retry later today." : `Search failed (HTTP ${r.status}).` }); failed = true; continue; }
-          if (((d.quota_remaining as number | undefined) ?? 1) === 0) { errors.push({ channel: "Stack Exchange", message: "Stack Exchange free quota exhausted for today — retry tomorrow." }); failed = true; continue; }
-          const items = (d.items as unknown[]) ?? [];
-          for (const it of items.slice(0, 20)) {
-            const c = seCandidate(asObj(it), site, profile, profile.id);
-            if (!c) continue;
-            addCandidate(c.key, c.values, c.s);
-          }
-        }
-      }
-    } else if (SITEMAP_FORUMS.some((f) => f.channel === ch) || ch.startsWith("forum:")) {
-      // Sitemap-indexed forums: no API, no RSS, bot-disallowed /search — but
-      // public sitemaps with thread titles in the slugs. Scored title-only;
-      // the candidate reason says so, and the founder verifies by opening
-      // the thread. Skipped (never blind) when no forum maps to the profile.
-      // `forum:<slug>` channels are web-discovered venues, resolved through
-      // the discovery cache (re-discovered on a cold cache).
-      let forums: SitemapForum[];
-      let label: string;
-      if (ch.startsWith("forum:")) {
-        let findings: DiscoveryFindings | null = null;
-        try { findings = await discoverVenuesFor(profile); } catch { findings = null; }
-        const dyn = findings ? dynamicForumFor(ch, findings) : null;
-        if (!dyn) { errors.push({ channel: ch, message: "This discovered venue is no longer verified — reload the Search tab to re-run channel discovery." }); continue; }
-        forums = [dyn]; label = dyn.label;
-      } else {
-        forums = sitemapForumsFor(profile).filter((f) => f.channel === ch);
-        label = SITEMAP_FORUMS.find((f) => f.channel === ch)?.label ?? ch;
-        if (!forums.length) { errors.push({ channel: label, message: "No sitemap-indexed forum matches this profile's topic — skipped instead of searching blindly." }); continue; }
-      }
-      for (const forum of forums) {
-        const r = await fetchSitemapEntries(forum, profile);
-        if ("error" in r) { errors.push({ channel: forum.label, message: r.error }); continue; }
-        for (const e of r.entries) {
-          const c = sitemapCandidate(e, forum, profile, profile.id);
-          if (!c) continue;
-          addCandidate(c.key, c.values, c.s);
-        }
-      }
-    } else if (ch === "hackernews") {
-      let failed = false;
-      // FirstFeedback: HN runs ONLY the help-request phrases against the
-      // ask_hn tag with relevance ranking. Every other profile keeps the
-      // existing story search_by_date behaviour exactly as it was.
-      const ffHn = isFirstFeedbackProfile(profile);
-      const hnQueries = ffHn ? FIRSTFEEDBACK_HN_HELP_QUERIES : queries.slice(0, 5);
-      for (const query of hnQueries) {
-        const url = ffHn
-          ? `https://hn.algolia.com/api/v1/search?query=${encodeURIComponent(query)}&tags=ask_hn&hitsPerPage=12`
-          : `https://hn.algolia.com/api/v1/search_by_date?query=${encodeURIComponent(query)}&tags=story&hitsPerPage=12`;
-        const r = await fetchJson(url);
-        if (!r.ok) { if (!failed) errors.push({ channel: "Hacker News", message: `Search failed (HTTP ${r.status}). Try again.` }); failed = true; continue; }
-        const hits = (asObj(r.data).hits as unknown[]) ?? [];
-        for (const h of hits.slice(0, ffHn ? 12 : 10)) {
-          const o = asObj(h);
-          const oid = String(o.objectID ?? "");
-          const title = String(o.title ?? "");
-          // Ask HN title-prefix gate (FirstFeedback only): only a title
-          // starting with "Ask HN" is a candidate. "Show HN" showcases and
-          // all other titles are excluded here — before the pre-filter — so
-          // they are never counted as found or discarded candidates. This
-          // also drops comment hits (they carry no story title).
-          if (ffHn && hnTitleKind(title) !== "ask") continue;
-          const text = String(o.story_text ?? o.title ?? "");
-          const clean = decodeHnText(text).slice(0, 900);
-          const s = analyseText(title + " " + clean, profile, "hackernews");
-          addCandidate(`hn:${oid}`, { profileId: profile.id, channel: "hackernews", mode: "live_search", externalUrl: `https://news.ycombinator.com/item?id=${oid}`, externalId: oid, author: String(o.author ?? ""), authorHandle: String(o.author ?? ""), title, body: clean, postedAt: String(o.created_at ?? ""), matchScore: s.score, matchReason: s.reason }, s);
-        }
-      }
-    } else if (ch === "github") {
-      let failed = false;
-      for (const query of queries.slice(0, 3)) {
-        if (failed) break; // rate-limited: stop spending the free search budget
-        const q = `${query} in:title,body state:open`;
-        const r = await fetchJson(`https://api.github.com/search/issues?q=${encodeURIComponent(q)}&per_page=10&sort=created&order=desc`, { headers: { Accept: "application/vnd.github+json" } });
-        if (!r.ok) { errors.push({ channel: "GitHub", message: r.status === 403 ? "GitHub free search rate limit hit (10/min unauthenticated). Wait a minute and retry." : `Search failed (HTTP ${r.status}).` }); failed = true; continue; }
-        const items = (asObj(r.data).items as unknown[]) ?? [];
-        for (const it of items) {
-          const o = asObj(it); const user = asObj(o.user);
-          if (o.pull_request) continue; // PRs are not posts; not counted as candidates at all
-          const title = String(o.title ?? ""); const bodyTxt = String(o.body ?? "").slice(0, 900);
-          // Full-body analysis only. The old head check (title + first 300
-          // chars needing an exact/context phrase) discarded GitHub
-          // candidates before their full text was ever scored — removed.
-          const s = analyseText(title + " " + bodyTxt, profile, "github");
-          const repoUrl = String(o.repository_url ?? ""); const repo = repoUrl.replace("https://api.github.com/repos/", "");
-          addCandidate(`gh:${String(o.id ?? "")}`, { profileId: profile.id, channel: "github", mode: "live_post", externalUrl: String(o.html_url ?? ""), externalId: String(o.id ?? ""), author: String(user.login ?? ""), authorHandle: String(user.login ?? ""), title, body: bodyTxt, community: repo, postedAt: String(o.created_at ?? ""), matchScore: s.score, matchReason: s.reason }, s);
-        }
-      }
-    } else if (ch === "devto") {
-      // Dev.to keyless articles API (verified 2026-11-01): tag-filtered, no
-      // query param — recent articles under the mapped tags are gated by the
-      // anchor, same honest pattern as the sitemap forums.
-      const tags = devtoTagsFor(profile);
-      if (!tags.length) { errors.push({ channel: "Dev.to", message: "No Dev.to tags match this profile's topic — skipped instead of searching blindly." }); continue; }
-      for (const tag of tags) {
-        const r = await fetchJson(`https://dev.to/api/articles?tag=${encodeURIComponent(tag)}&per_page=20`);
-        if (!r.ok) { errors.push({ channel: "Dev.to", message: `Search failed (HTTP ${r.status}). Try again.` }); continue; }
-        const articles = Array.isArray(r.data) ? r.data : [];
-        for (const a of articles) {
-          const c = devtoCandidate(asObj(a), tag, profile, profile.id);
-          if (!c) continue;
-          addCandidate(c.key, c.values, c.s);
-        }
-      }
-    } else if (ch === "lobsters") {
-      // Lobsters newest.json (verified 2026-11-01): no per-topic query API,
-      // so the front page is gated title-by-title. Dev profiles only — recs
-      // demote it everywhere else, and the gate keeps strays out regardless.
-      const r = await fetchJson("https://lobste.rs/newest.json");
-      if (!r.ok) { errors.push({ channel: "Lobsters", message: `Search failed (HTTP ${r.status}). Try again.` }); continue; }
-      const stories = Array.isArray(r.data) ? r.data : [];
-      for (const st of stories) {
-        const c = lobstersCandidate(asObj(st), profile, profile.id);
-        if (!c) continue;
-        addCandidate(c.key, c.values, c.s);
-      }
-    } else if (ch === "bluesky") {
-      const sess = await ensureBsky(ctx);
-      if (!sess) { errors.push({ channel: "Bluesky", message: "Bluesky is not connected. Connect your free Bluesky account in Channels to search posts." }); continue; }
-      let failed = false;
-      for (const query of queries.slice(0, 5)) {
-        const r = await fetchJson(`https://bsky.social/xrpc/app.bsky.feed.searchPosts?q=${encodeURIComponent(query)}&limit=15&sort=latest`, { headers: { Authorization: `Bearer ${sess.accessJwt}` } });
-        if (!r.ok) { if (!failed) errors.push({ channel: "Bluesky", message: `Search failed (HTTP ${r.status}). Your session may have expired — reconnect in Channels.` }); failed = true; continue; }
-        const posts = (asObj(r.data).posts as unknown[]) ?? [];
-        for (const p of posts.slice(0, 10)) {
-          const o = asObj(p); const author = asObj(o.author); const record = asObj(o.record);
-          const uri = String(o.uri ?? ""); const rkey = uri.split("/").pop() ?? "";
-          const handle = String(author.handle ?? "");
-          const text = String(record.text ?? "").slice(0, 900);
-          const s = analyseText(text, profile, "bluesky");
-          addCandidate(`bsky:${uri}`, { profileId: profile.id, channel: "bluesky", mode: "live_post", externalUrl: `https://bsky.app/profile/${handle}/post/${rkey}`, externalId: uri, externalUri: uri, externalCid: String(o.cid ?? ""), author: String(author.displayName ?? handle), authorHandle: handle, title: "", body: text, postedAt: String(record.createdAt ?? o.indexedAt ?? ""), matchScore: s.score, matchReason: s.reason }, s);
-        }
-      }
-    } else if (ch === "reddit_poc") {
-      const subs = subreddits.split(/[,\s]+/).map((s) => s.trim().replace(/^r\//, "")).filter(Boolean).slice(0, 5);
-      if (!subs.length) { errors.push({ channel: "Reddit POC", message: "Enter at least one subreddit (max 5) for the POC search." }); continue; }
-      const sess = await ensureReddit(ctx);
-      if ("error" in sess) { errors.push({ channel: "Reddit POC", message: sess.error }); continue; }
-      // On-demand only, sequential, deduplicated in the leads table — total
-      // calls capped at 10 per run, far under the 100/min free-tier limit.
-      let calls = 0;
-      for (const sub of subs) {
-        for (const query of queries.slice(0, 3)) {
-          if (calls >= 10) break;
-          calls++;
-          const url = `https://oauth.reddit.com/r/${encodeURIComponent(sub)}/search?q=${encodeURIComponent(query)}&restrict_sr=on&sort=new&t=month&limit=10`;
-          const r = await fetchJson(url, { headers: { Authorization: `Bearer ${sess.access}` } });
-          if (!r.ok) { errors.push({ channel: "Reddit POC", message: `r/${sub} search failed (HTTP ${r.status}). Check the subreddit name and your POC connection.` }); continue; }
-          const children = (asObj(asObj(r.data).data).children as unknown[]) ?? [];
-          for (const c of children) {
-            const d = asObj(asObj(c).data);
-            const fullname = String(d.name ?? "");
-            const title = String(d.title ?? ""); const self = String(d.selftext ?? "").slice(0, 900);
-            const s = analyseText(title + " " + self, profile, "reddit_poc");
-            addCandidate(`rd:${fullname}`, { profileId: profile.id, channel: "reddit_poc", mode: "live_post", externalUrl: `https://www.reddit.com${String(d.permalink ?? "")}`, externalId: fullname, author: String(d.author ?? ""), authorHandle: String(d.author ?? ""), title, body: self, community: `r/${sub}`, postedAt: d.created_utc ? new Date(Number(d.created_utc) * 1000).toISOString() : "", matchScore: s.score, matchReason: s.reason }, s);
-          }
-        }
-      }
+  // Searchers run in parallel — one worker per channel, each sequential
+  // internally exactly as before. A worker never throws past its own error
+  // entry: one channel failing degrades to that channel, never the run.
+  const searchBudget = makeCallBudget(SEARCH_BUDGET_CALLS);
+  const searcherBase = { ctx, profile, queries, subreddits, seSites, execPlan, budget: searchBudget };
+  const settled = await Promise.all(channels.map(async (ch): Promise<SearcherResult> => {
+    try {
+      if (ch === "stackexchange") return await searchChannelStackExchange(searcherBase);
+      if (ch === "hackernews") return await searchChannelHackerNews(searcherBase);
+      if (ch === "github") return await searchChannelGitHub(searcherBase);
+      if (ch === "devto") return await searchChannelDevto(searcherBase);
+      if (ch === "lobsters") return await searchChannelLobsters(searcherBase);
+      if (ch === "bluesky") return await searchChannelBluesky(searcherBase);
+      if (ch === "reddit_poc") return await searchChannelReddit(searcherBase);
+      if (SITEMAP_FORUMS.some((f) => f.channel === ch) || ch.startsWith("forum:")) return await searchChannelForums({ ...searcherBase, ch });
+      return { cands: [], errors: [{ channel: ch, message: "Unknown channel — EarlyProof cannot search it. Pick channels from the Channels step lineup." }] };
+    } catch (e) {
+      return { cands: [], errors: [{ channel: ch, message: "Search crashed (" + String(e).slice(0, 120) + ") — other channels unaffected." }] };
     }
+  }));
+  for (const r of settled) {
+    for (const c of r.cands) addCandidate(c.key, c.values, c.s);
+    for (const e of r.errors) errors.push(e);
   }
+
 
   // Selection: light-gate passers first (strongest first, capped at 30 so a
   // single search never floods Muse synthesis), then — if fewer than 3
   // passed — top-up promotion of the highest-scoring ANCHORED candidates so
   // Muse always gets a real batch to judge when anchored posts exist.
   const sorted = [...candidates.values()].sort((a, b) => b.score - a.score);
-  const found = sorted.length;
+  // Hybrid order: rule score (anchor + signals) fused with BM25 over this
+  // pool (IDF-weighted, title doubled). matchScore stays rule-based for the
+  // gates and the pill; fusion changes only which 30 reach Muse, in what
+  // queue order — common-word matches ("giving", "away", "help") sink
+  // because the pool itself teaches their weight. (Stage 2 seam: add a
+  // cosine-vs-queries ordering into fuseRanks when local embedding weights
+  // exist — see retrieval.ts.)
+  const ruleKeys = sorted.map((c) => c.key);
+  const bm25Keys = bm25Order(queries, sorted.map((c) => ({ key: c.key, title: c.values.title ?? "", body: c.values.body ?? "" })));
+  let fused = fuseRanks([ruleKeys, bm25Keys]);
+  // Stage 2 — semantic ordering (listwise Muse rerank, one batched call).
+  // Meaning joins the fusion as a third ordering; any failure keeps the
+  // lexical fusion and is reported on the run, never hidden.
+  let semanticApplied = false;
+  let semanticMessage = "fewer than 2 candidates — nothing to rerank";
+  const semanticScores = new Map<string, number>();
+  const rankBy = (keys: string[]) => {
+    const rank = new Map(keys.map((key, i) => [key, i]));
+    return sorted.slice().sort((a, b) => (rank.get(a.key) ?? 1e9) - (rank.get(b.key) ?? 1e9) || b.score - a.score);
+  };
+  let ordered = rankBy(fused);
+  const rerankInput = ordered.slice(0, SEMANTIC_RERANK_CAP);
+  if (rerankInput.length >= 2) {
+    const keys = new Set(rerankInput.map((c) => c.key));
+    const r = await runLlm(ctx, "small", buildSemanticRerankPrompt(profile.pain, profile.audience,
+      rerankInput.map((c) => ({ key: c.key, title: c.values.title ?? "", body: c.values.body ?? "" }))), semanticRerankSchema);
+    if (r.ok) {
+      for (const [k, s] of parseSemanticScores(r.value, keys)) semanticScores.set(k, s);
+      const semanticOrder = rerankInput.slice().sort((a, b) => (semanticScores.get(b.key) ?? -1) - (semanticScores.get(a.key) ?? -1)).map((c) => c.key);
+      fused = fuseRanks([ruleKeys, bm25Keys, semanticOrder]);
+      ordered = rankBy(fused);
+      semanticApplied = true;
+      semanticMessage = `Muse reranked ${rerankInput.length} candidates by meaning — paraphrase-aware order fed the top 30`;
+    } else {
+      semanticMessage = `kept lexical order — ${r.message.slice(0, 140)}`;
+      errors.push({ channel: "semantic rerank", message: semanticMessage });
+    }
+  }
+  const found = ordered.length;
   const MAX_TO_SYNTHESIS = 30;
-  let selected = sorted.filter((c) => c.keep).slice(0, MAX_TO_SYNTHESIS);
+  let selected = ordered.filter((c) => c.keep).slice(0, MAX_TO_SYNTHESIS);
   let promoted = 0;
   if (selected.length < 3) {
-    const extra = sorted
+    const extra = ordered
       .filter((c) => !c.keep && c.anchorPresent && !selected.includes(c))
       .slice(0, Math.min(3 - selected.length, MAX_TO_SYNTHESIS - selected.length));
     if (extra.length) { selected = [...selected, ...extra]; promoted = extra.length; }
@@ -1829,6 +2130,7 @@ async function runChannelSearch(
     const isPromoted = !cand.keep;
     await db.insert(schema.leads).values({
       ...cand.values,
+      semanticScore: semanticScores.get(cand.key) ?? -1,
       matchReason: isPromoted
         ? `${cand.reason} Passed to Muse as a top anchored candidate from this search — the light pre-filter found the domain anchor, and Muse makes the relevance call with evidence and confidence.`
         : cand.reason,
@@ -1838,21 +2140,21 @@ async function runChannelSearch(
     created++;
   }
   const discarded = sorted.filter((c) => !selectedKeys.has(c.key)).length;
-  return { created, found, discarded, pruned, promoted, errors };
+  return { created, found, discarded, pruned, promoted, errors, semanticApplied, semanticMessage };
 }
 
-const searchResponse = z.object({ runId: z.number(), created: z.number(), found: z.number(), discarded: z.number(), pruned: z.number(), promoted: z.number(), synthesized: z.number(), synthesisStatus: z.string(), synthesisMessage: z.string(), errors: z.array(z.object({ channel: z.string(), message: z.string() })), expansionRound: z.number(), expansionAnchor: z.string(), expansionQueries: z.array(z.string()), expansionGenerated: z.boolean(), nextSuggestions: z.array(z.string()) });
-const emptySearch = { runId: 0, created: 0, found: 0, discarded: 0, pruned: 0, promoted: 0, synthesized: 0, expansionRound: 0, expansionAnchor: "", expansionQueries: [] as string[], expansionGenerated: false, nextSuggestions: [] as string[] };
+const searchResponse = z.object({ runId: z.number(), created: z.number(), found: z.number(), discarded: z.number(), pruned: z.number(), promoted: z.number(), synthesized: z.number(), synthesisStatus: z.string(), synthesisMessage: z.string(), errors: z.array(z.object({ channel: z.string(), message: z.string() })), expansionRound: z.number(), expansionAnchor: z.string(), expansionQueries: z.array(z.string()), expansionGenerated: z.boolean(), nextSuggestions: z.array(z.string()), semanticApplied: z.boolean(), semanticMessage: z.string() });
+const emptySearch = { runId: 0, created: 0, found: 0, discarded: 0, pruned: 0, promoted: 0, synthesized: 0, expansionRound: 0, expansionAnchor: "", expansionQueries: [] as string[], expansionGenerated: false, nextSuggestions: [] as string[], semanticApplied: false, semanticMessage: "" };
 
 const leadOut = z.object({
   id: z.number(), profileId: z.number(), channel: z.string(), mode: z.string(), externalUrl: z.string(),
   externalId: z.string(), author: z.string(), authorHandle: z.string(), title: z.string(), body: z.string(),
-  community: z.string(), postedAt: z.string(), matchScore: z.number(), matchReason: z.string(),
+  community: z.string(), postedAt: z.string(), matchScore: z.number(), matchReason: z.string(), semanticScore: z.number(),
   draftBody: z.string(), status: z.string(), postedUrl: z.string(), created_at: z.string(),
   llmCategory: z.string(), llmConfidence: z.number(), llmReason: z.string(), llmQuote: z.string(),
   llmSignals: z.string(), llmReviewed: z.boolean(), draftToneCheck: z.string(),
 });
-const llmStatusOut = z.object({ configured: z.boolean(), provider: z.string(), hasKey: z.boolean(), keyHint: z.string(), direct: z.boolean(), baseUrl: z.string(), smallModel: z.string(), largeModel: z.string(), founderVoice: z.string() });
+const llmStatusOut = z.object({ configured: z.boolean(), provider: z.string(), hasKey: z.boolean(), keyHint: z.string(), direct: z.boolean(), baseUrl: z.string(), smallModel: z.string(), largeModel: z.string(), hasBraveKey: z.boolean() });
 const feedbackOut = z.object({ id: z.number(), profileId: z.number(), seedName: z.string(), source: z.string(), rawText: z.string(), created_at: z.string() });
 const summaryOut = z.object({ id: z.number(), profileId: z.number(), kind: z.string(), content: z.string(), created_at: z.string() });
 
@@ -1907,13 +2209,13 @@ export const Actions = {
         llm: {
           configured: llmConfigured(llmRow ?? null),
           provider: "muse",
-          hasKey: !!(llmRow?.apiKey.trim()),
-          keyHint: llmRow?.apiKey.trim() ? `••••${llmRow.apiKey.trim().slice(-4)}` : "",
-          direct: !!(llmRow?.apiKey.trim() && verifiedDirect(llmRow.apiKey)),
+          hasKey: !!(llmRow?.apiKey.trim() && !isPlaceholderKey(llmRow.apiKey)),
+          keyHint: llmRow?.apiKey.trim() && !isPlaceholderKey(llmRow.apiKey) ? `••••${llmRow.apiKey.trim().slice(-4)}` : "",
+          direct: !!(llmRow?.apiKey.trim() && !isPlaceholderKey(llmRow.apiKey) && verifiedDirect(llmRow.apiKey)),
           baseUrl: llmRow?.baseUrl ?? "",
           smallModel: llmRow?.smallModel ?? "",
           largeModel: llmRow?.largeModel ?? "",
-          founderVoice: llmRow?.founderVoice ?? "",
+          hasBraveKey: !!(llmRow?.braveKey.trim()),
         },
         feedback: feedback.map((f) => ({ id: f.id, profileId: f.profileId, seedName: f.seedName, source: f.source, rawText: f.rawText, created_at: f.createdAt.toISOString() })),
         summaries: summaries.map((s) => ({ id: s.id, profileId: s.profileId, kind: s.kind, content: s.content, created_at: s.createdAt.toISOString() })),
@@ -1998,7 +2300,10 @@ export const Actions = {
         coreAction: "Applied to a starter gig through a friend",
       }).returning({ id: schema.profiles.id });
       const pid = pr[0]?.id ?? 0;
-      const sig = JSON.stringify({ rightPerson: true, realPain: true, workaroundOrPaying: true, recent: true });
+      // Demo leads carry NO Muse output: verdicts, quotes, signals and drafts
+      // are empty until the founder connects a real key and runs the step.
+      // The pointer below is the alert, shown where a verdict would be.
+      const demoPointer = "Demo lead — no Muse verdict yet. Connect your Muse key, then run “Classify waiting leads” for a live one.";
       const a = await db.insert(schema.leads).values({
         profileId: pid, channel: "bluesky", mode: "live_post",
         externalUrl: "https://bsky.app/profile/demo.bsky.social/post/demo01", externalId: "demo-a",
@@ -2006,10 +2311,9 @@ export const Actions = {
         body: "Laid off last Friday with rent due in two weeks. Everyone says learn to code but I need money now, not in six months.",
         postedAt: new Date().toISOString(), matchScore: 74,
         matchReason: "Demo lead — matched “laid off” plus pain signals.",
-        draftBody: "Your post hit home — I built SecondShift for this exact spot. Open to trying it for one gig?",
-        status: "sent", llmCategory: "seed_user", llmConfidence: 82,
-        llmReason: "Laid-off worker describing their own pain in their own words.",
-        llmQuote: "need money now, not in six months", llmSignals: sig,
+        status: "sent", llmCategory: "", llmConfidence: 0,
+        llmReason: demoPointer,
+        llmQuote: "", llmSignals: "",
       }).returning({ id: schema.leads.id });
       const bBody = "Laid off in March, applied to 200 jobs with two callbacks. Trying freelance gigs now but don't know where to start.";
       await db.insert(schema.leads).values({
@@ -2018,9 +2322,9 @@ export const Actions = {
         author: "Mara", authorHandle: "mara.bsky.social", title: "", body: bBody,
         postedAt: new Date().toISOString(), matchScore: 70,
         matchReason: "Demo lead — matched “freelance” plus pain signals.",
-        status: "new", llmCategory: "curious", llmConfidence: 55,
-        llmReason: "Laid-off worker trying workarounds, asking where to start.",
-        llmQuote: "don't know where to start", llmSignals: sig,
+        status: "new", llmCategory: "", llmConfidence: 0,
+        llmReason: demoPointer,
+        llmQuote: "", llmSignals: "",
       });
       const cBody = "Took a starter gig through a friend, got paid, now looking for steady freelance work.";
       const c = await db.insert(schema.leads).values({
@@ -2029,9 +2333,9 @@ export const Actions = {
         author: "Devon", authorHandle: "Devon", title: "", body: cBody, community: "Demo group",
         postedAt: new Date().toISOString(), matchScore: 72,
         matchReason: "Demo lead — did the core action.",
-        status: "trial", llmCategory: "seed_user", llmConfidence: 80,
-        llmReason: "Did the core action and keeps going.",
-        llmQuote: "got paid, now looking for steady freelance work", llmSignals: sig,
+        status: "trial", llmCategory: "", llmConfidence: 0,
+        llmReason: demoPointer,
+        llmQuote: "", llmSignals: "",
       }).returning({ id: schema.leads.id });
       const cId = c[0]?.id ?? 0;
       const inv = await db.insert(schema.invites).values({ profileId: pid, leadId: cId, code: "DEMO-01", label: "Devon", seedName: "Devon" }).returning({ id: schema.invites.id });
@@ -2063,8 +2367,10 @@ export const Actions = {
       // open channels by default, plus any closed channel the founder has
       // connected and selected (an unconnected closed channel only adds a
       // note — it never blocks the open search).
+      // Orchestrated end to end on one run: Scout maps (or reuses), Searchers
+      // fan out across the selected channels, Judge synthesizes.
       const runId = await startSearchRun(db, profile.id, "search");
-      const exp = await ensureExpansionPlan(ctx, profile);
+      const exp = await ensureExpansionPlan(ctx, profile, runId);
       if (!exp.ok) {
         await touchSearchRun(db, runId, "done", exp.message);
         return { ...emptySearch, runId, synthesisStatus: exp.status, synthesisMessage: exp.message, errors: [{ channel: "Muse expansion", message: exp.message }] };
@@ -2085,12 +2391,12 @@ export const Actions = {
       const run = await runChannelSearch(ctx, profile, args.channels, args.subreddits, usable);
       // Step 4 — LLM synthesis runs automatically before any result is shown.
       await touchSearchRun(db, runId, "synthesizing", `Synthesizing ${run.created} candidate(s) with Muse…`, { found: run.found, created: run.created });
-      const synth = await classifyForProfile(ctx, profile);
+      const synth = await classifyForProfile(ctx, profile, runId);
       const errors = [...run.errors];
       if (synth.status !== "ok") errors.push({ channel: "Muse synthesis", message: synth.message });
       await touchSearchRun(db, runId, "done", `Checked ${run.found} posts, ${run.created} looked like your people.`, { found: run.found, created: run.created, synthesized: synth.classified + synth.cached });
       ctx.invalidateQueries();
-      return { runId, created: run.created, found: run.found, discarded: run.discarded, pruned: run.pruned, promoted: run.promoted, synthesized: synth.classified + synth.cached, synthesisStatus: synth.status, synthesisMessage: synth.message, errors, expansionRound: exp.round, expansionAnchor: exp.plan.anchorTerm, expansionQueries: usable, expansionGenerated: exp.generated, nextSuggestions: exp.plan.nextSuggestions };
+      return { runId, created: run.created, found: run.found, discarded: run.discarded, pruned: run.pruned, promoted: run.promoted, synthesized: synth.classified + synth.cached, synthesisStatus: synth.status, synthesisMessage: synth.message, errors, expansionRound: exp.round, expansionAnchor: exp.plan.anchorTerm, expansionQueries: usable, expansionGenerated: exp.generated, nextSuggestions: exp.plan.nextSuggestions, semanticApplied: run.semanticApplied, semanticMessage: run.semanticMessage };
     },
   }),
 
@@ -2111,27 +2417,29 @@ export const Actions = {
       if (!(await requireLlm(ctx))) return { ...emptySearch, synthesisStatus: "not_configured", synthesisMessage: LLM_SETUP_MESSAGE, errors: [{ channel: "Muse setup required", message: LLM_SETUP_MESSAGE }] };
       const leadsNow = await db.select().from(schema.leads).where(eq(schema.leads.profileId, profile.id));
       const synthesizedNow = leadsNow.filter((l) => !!l.llmCategory).length;
-      const gen = await generateExpansionRound(ctx, profile, {
+      // Orchestrated end to end on one run: Scout maps, Searchers fan out,
+      // Judge synthesizes — each step traced through the same run id.
+      const runId = await startSearchRun(db, profile.id, "expand");
+      const gen = await scoutPlanAgent.execute(ctx, { profile, context: {
         reason: synthesizedNow === 0
           ? "The last search returned 0 synthesized results — a dead end the founder asked to expand past."
           : `The founder asked to widen the search beyond the ${synthesizedNow} synthesized result(s) found so far.`,
         found: leadsNow.length, discarded: 0, synthesized: synthesizedNow, seenCount: leadsNow.length,
-      });
-      const runId = await startSearchRun(db, profile.id, "expand");
+      } }, runId);
       if (!gen.ok) {
         await touchSearchRun(db, runId, "done", gen.message);
         return { ...emptySearch, runId, synthesisStatus: gen.status, synthesisMessage: gen.message, errors: [{ channel: "Muse expansion", message: gen.message }] };
       }
-      const queries = gen.plan.queries.map((q) => q.query).slice(0, 6);
-      await touchSearchRun(db, runId, "searching", `Searching ${args.channels.length} channel(s) with round ${gen.round} queries…`);
+      const queries = gen.value.plan.queries.map((q) => q.query).slice(0, 6);
+      await touchSearchRun(db, runId, "searching", `Searching ${args.channels.length} channel(s) with round ${gen.value.round} queries…`);
       const run = await runChannelSearch(ctx, profile, args.channels, args.subreddits, queries);
       await touchSearchRun(db, runId, "synthesizing", `Synthesizing ${run.created} candidate(s) with Muse…`, { found: run.found, created: run.created });
-      const synth = await classifyForProfile(ctx, profile);
+      const synth = await classifyForProfile(ctx, profile, runId);
       const errors = [...run.errors];
       if (synth.status !== "ok") errors.push({ channel: "Muse synthesis", message: synth.message });
       await touchSearchRun(db, runId, "done", `Checked ${run.found} posts, ${run.created} looked like your people.`, { found: run.found, created: run.created, synthesized: synth.classified + synth.cached });
       ctx.invalidateQueries();
-      return { runId, created: run.created, found: run.found, discarded: run.discarded, pruned: run.pruned, promoted: run.promoted, synthesized: synth.classified + synth.cached, synthesisStatus: synth.status, synthesisMessage: synth.message, errors, expansionRound: gen.round, expansionAnchor: gen.plan.anchorTerm, expansionQueries: queries, expansionGenerated: true, nextSuggestions: gen.plan.nextSuggestions };
+      return { runId, created: run.created, found: run.found, discarded: run.discarded, pruned: run.pruned, promoted: run.promoted, synthesized: synth.classified + synth.cached, synthesisStatus: synth.status, synthesisMessage: synth.message, errors, expansionRound: gen.value.round, expansionAnchor: gen.value.plan.anchorTerm, expansionQueries: queries, expansionGenerated: true, nextSuggestions: gen.value.plan.nextSuggestions, semanticApplied: run.semanticApplied, semanticMessage: run.semanticMessage };
     },
   }),
 
@@ -2139,17 +2447,23 @@ export const Actions = {
   // founder can read where Muse wants to look before any search runs.
   generateExpansionPlan: defineAction({
     request: z.object({ profileId: z.number() }),
-    response: z.object({ status: z.string(), message: z.string(), round: z.number(), anchorTerm: z.string(), droppedUnanchored: z.number() }),
+    response: z.object({ status: z.string(), message: z.string(), round: z.number(), anchorTerm: z.string(), droppedUnanchored: z.number(), runId: z.number() }),
     async handler(ctx, args) {
       const db = ctx.db<typeof schema>();
       const profRows = await db.select().from(schema.profiles).where(eq(schema.profiles.id, args.profileId));
       const profile = profRows[0];
-      if (!profile) return { status: "error", message: "Profile not found.", round: 0, anchorTerm: "", droppedUnanchored: 0 };
+      if (!profile) return { status: "error", message: "Profile not found.", round: 0, anchorTerm: "", droppedUnanchored: 0, runId: 0 };
+      const huntId = await startSearchRun(db, profile.id, "hunt");
       const leadsNow = await db.select().from(schema.leads).where(eq(schema.leads.profileId, profile.id));
-      const gen = await generateExpansionRound(ctx, profile, { reason: "The founder asked for an expansion plan.", found: leadsNow.length, discarded: 0, synthesized: leadsNow.filter((l) => !!l.llmCategory).length, seenCount: leadsNow.length });
-      if (!gen.ok) return { status: gen.status, message: gen.message, round: 0, anchorTerm: "", droppedUnanchored: 0 };
+      const gen = await scoutPlanAgent.execute(ctx, { profile, context: { reason: "The founder asked for an expansion plan.", found: leadsNow.length, discarded: 0, synthesized: leadsNow.filter((l) => !!l.llmCategory).length, seenCount: leadsNow.length } }, huntId);
+      if (!gen.ok) {
+        await touchSearchRun(db, huntId, "done", gen.message);
+        return { status: gen.status, message: gen.message, round: 0, anchorTerm: "", droppedUnanchored: 0, runId: huntId };
+      }
+      const doneDetail = `Round ${gen.value.round} saved: ${gen.value.plan.queries.length} anchored queries (anchor “${gen.value.plan.anchorTerm}”)${gen.value.plan.droppedUnanchored ? `, ${gen.value.plan.droppedUnanchored} unanchored dropped` : ""}, ${gen.value.plan.communities.length} communities mapped — now verifying picks against the web…`;
+      await touchSearchRun(db, huntId, "done", doneDetail);
       ctx.invalidateQueries();
-      return { status: "ok", message: `Expansion plan round ${gen.round} saved — ${gen.plan.queries.length} anchored queries (anchor: “${gen.plan.anchorTerm}”)${gen.plan.droppedUnanchored ? `, ${gen.plan.droppedUnanchored} unanchored suggestion${gen.plan.droppedUnanchored === 1 ? "" : "s"} dropped` : ""}, ${gen.plan.communities.length} communities mapped to channels. It will drive the next search.`, round: gen.round, anchorTerm: gen.plan.anchorTerm, droppedUnanchored: gen.plan.droppedUnanchored };
+      return { status: "ok", message: `Expansion plan round ${gen.value.round} saved — ${gen.value.plan.queries.length} anchored queries (anchor: “${gen.value.plan.anchorTerm}”)${gen.value.plan.droppedUnanchored ? `, ${gen.value.plan.droppedUnanchored} unanchored suggestion${gen.value.plan.droppedUnanchored === 1 ? "" : "s"} dropped` : ""}, ${gen.value.plan.communities.length} communities mapped to channels. It will drive the next search.`, round: gen.value.round, anchorTerm: gen.value.plan.anchorTerm, droppedUnanchored: gen.value.plan.droppedUnanchored, runId: huntId };
     },
   }),
 
@@ -2159,25 +2473,25 @@ export const Actions = {
   // non-technical profile.
   recommendChannels: defineAction({
     request: z.object({ profileId: z.number() }),
-    response: z.object({ status: z.string(), message: z.string(), basedOn: z.string(), webOk: z.boolean(), recs: z.array(z.object({ channel: z.string(), label: z.string(), fit: z.string(), reasons: z.array(z.string()), needsConnection: z.boolean() })), venues: z.array(z.object({ name: z.string(), where: z.string(), why: z.string(), url: z.string() })) }),
+    response: z.object({ status: z.string(), message: z.string(), basedOn: z.string(), webOk: z.boolean(), webVia: z.string(), recs: z.array(z.object({ channel: z.string(), label: z.string(), fit: z.string(), reasons: z.array(z.string()), needsConnection: z.boolean(), verified: z.boolean() })), venues: z.array(z.object({ name: z.string(), where: z.string(), why: z.string(), url: z.string(), src: z.string() })) }),
     async handler(ctx, args) {
       const db = ctx.db<typeof schema>();
       const profRows = await db.select().from(schema.profiles).where(eq(schema.profiles.id, args.profileId));
       const profile = profRows[0];
-      if (!profile) return { status: "error", message: "Profile not found.", basedOn: "", webOk: false, recs: [], venues: [] };
+      if (!profile) return { status: "error", message: "Profile not found.", basedOn: "", webOk: false, webVia: "", recs: [], venues: [] };
       const existing = await db.select().from(schema.searchExpansions).where(eq(schema.searchExpansions.profileId, profile.id));
       const latest = existing.sort((a, b) => b.round - a.round)[0];
       let plan: ExpansionPlan | null = null;
-      let basedOn = "profile signals (no expansion plan yet — generate one for sharper picks)";
+      let basedOn = "no expansion plan yet — run the channel hunt and Muse maps where these people talk";
       if (latest) {
         const p = parseExpansionPlan(latest.plan || "{}");
         if (p) {
           plan = p;
           basedOn = p.queries.length
-            ? `Muse expansion round ${latest.round} + profile signals`
-            : `Muse expansion round ${latest.round} (communities only — re-generate for search queries) + profile signals`;
+            ? `Muse expansion round ${latest.round}`
+            : `Muse expansion round ${latest.round} (communities only — re-generate for search queries)`;
         } else {
-          basedOn = "profile signals (the saved plan came back empty — re-generate it for sharper picks)";
+          basedOn = "the saved plan came back empty — re-generate it";
         }
       }
       const { recs } = channelRecsFor(profile, plan);
@@ -2185,30 +2499,50 @@ export const Actions = {
       // discussion threads found by search merge into the static recs, and
       // verified new forums join the lineup as `forum:<slug>` channels. A
       // failed discovery degrades to static recs — never an error.
-      let venues: { name: string; where: string; why: string; url: string }[] = [];
+      let venues: { name: string; where: string; why: string; url: string; src: "web" | "plan" }[] = [];
       let webOk = false;
+      let webVia = "";
       try {
-        const found = await discoverVenuesFor(profile);
+        const found = await discoverVenuesFor(profile, await braveKeyFor(ctx), plan);
         webOk = found.webOk;
+        webVia = found.webVia;
         mergeDiscovery(recs, found);
+        // Plan-first honesty: a pill is "verified" only when the web check
+        // saw real threads on it. Everything else stands on Muse's plan
+        // alone — shown anyway, badged as such, never hidden.
+        for (const r of recs) if (found.evidence.some((e) => e.channel === r.channel)) r.verified = true;
+        const planNamed = new Map(planDomains(plan).map((d) => [d.domain, d.name]));
         for (const d of found.dynamic) {
           if (recs.some((r) => r.channel === `forum:${d.slug}`)) continue;
-          recs.push({ channel: `forum:${d.slug}`, label: d.label, fit: "good", reasons: [`Web search verified ${d.label} threads about this pain (thread sitemap readable) — keyless title search.`], needsConnection: false });
+          const named = planNamed.get(d.domain);
+          recs.push({ channel: `forum:${d.slug}`, label: d.label, fit: "good", reasons: [named ? `Muse's plan named “${named}” here and its thread sitemap reads — verified without any search engine.` : `Web search verified ${d.label} threads about this pain (thread sitemap readable) — keyless title search.`], needsConnection: false, verified: true });
         }
         sortRecs(recs);
         venues = found.venues.slice(0, 6);
+        // Plan-named places no channel can execute (YouTube, Facebook, …)
+        // join the venue list straight from the plan with a plan badge, so a
+        // dead web check can never silently drop somewhere Muse mapped.
+        const covered = new Set(recs.map((r) => r.channel));
+        for (const c of plan?.communities ?? []) {
+          const key = c.channel === "reddit" ? "reddit_poc" : (c.channel ?? "").trim();
+          if (!c.name || !key || covered.has(key)) continue;
+          const k = `${c.name} ${c.where || ""}`.toLowerCase();
+          if (venues.some((v) => `${v.name} ${v.where}`.toLowerCase() === k)) continue;
+          venues.push({ name: c.name, where: c.where || "", why: c.why ? `${c.why} (From Muse's plan — the live web check hasn't confirmed this place yet.)` : "From Muse's plan — the live web check hasn't confirmed this place yet.", url: "", src: "plan" });
+        }
+        venues = venues.slice(0, 8);
       } catch { /* static recs stand alone */ }
-      const tops = recs.filter((r) => r.fit === "best" && !r.needsConnection).map((r) => r.label);
-      const poors = recs.filter((r) => r.fit === "poor" && !r.needsConnection).map((r) => r.label);
+      const open = recs.filter((r) => !r.needsConnection);
+      const closed = recs.filter((r) => r.needsConnection);
+      const webNote = webOk && webVia ? ` Web evidence via ${webVia === "brave" ? "Brave Search (keyed)" : webVia === "searxng" ? "SearXNG (self-hosted, free)" : "DuckDuckGo (free)"}.` : " Web check unavailable — every pick below stands on Muse's plan, badged plan-only until the check runs.";
       return {
         status: "ok",
-        message: tops.length
-          ? `Best channels for this profile: ${tops.join(", ")} (${basedOn}).`
-          : poors.length
-            ? `No channel stands out for this profile (${basedOn}) — ${poors.join(", ")} deselected as poor fits.`
-            : `No channel stands out for this profile (${basedOn}) — all open channels stay selected.`,
+        message: (recs.length
+          ? `${open.length ? `Searching ${open.map((r) => r.label).join(", ")}` : "No open channels"}${closed.length ? ` · closed until connected: ${closed.map((r) => r.label).join(", ")}` : ""} (${basedOn}).`
+          : `No channels mapped yet (${basedOn}) — run the channel hunt and Muse names where these people talk.`) + webNote,
         basedOn,
         webOk,
+        webVia,
         recs,
         venues,
       };
@@ -2291,17 +2625,12 @@ export const Actions = {
       // Classification gate: no lead — live, pasted or guided — may be used for
       // outreach until Muse has classified it. Held verdicts (low confidence
       // or irrelevant) must be cleared by the founder first.
-      if (!lead.llmCategory) return { draft: lead.draftBody, toneCheck: "Muse classification required first: this lead has not been classified by Muse yet, so it can't be used for outreach. Run “Classify waiting leads” in the Match queue, read the verdict and its quote, then generate the draft.", llmStatus: "needs_classification" };
+      if (!lead.llmCategory) return { draft: lead.draftBody, toneCheck: "Muse classification required first: this lead has not been classified by Muse yet, so it can't be used for outreach. Run “Classify waiting leads” on the Threads step, read the verdict and its quote, then generate the draft.", llmStatus: "needs_classification" };
       if ((lead.llmCategory === "irrelevant" || (lead.llmConfidence > 0 && lead.llmConfidence < LOW_CONFIDENCE)) && lead.llmReviewed !== 1) {
         return { draft: lead.draftBody, toneCheck: "Held for your review: Muse classified this lead as low-confidence or irrelevant. Read the evidence on the lead and tap “I reviewed this — keep it in my queue” before any draft is written for it.", llmStatus: "needs_review" };
       }
-      const voice = settings.founderVoice.trim();
-      const channelRules = lead.channel === "bluesky" ? "Bluesky: keep it under 280 characters, conversational, no hashtag spam." : lead.channel === "reddit_poc" || lead.channel === "reddit" ? "Reddit: respect community norms — no link dump on first touch, no hype, disclose that you built it." : lead.channel === "github" ? "GitHub: be brief and technical, acknowledge their issue specifically, never spam maintainers." : "Closed/DM channel: extra care — they didn't ask to be contacted; be short, easy to decline, no pressure.";
-      const r = await runLlm(ctx, "large",
-        `Write a first outreach message for a founder, then check your own work in the toneCheck field: one or two plain sentences on whether the draft sounds like a genuine founder asking for help (not a pitch blast or a template), whether it follows the channel rules, and anything the founder should fix before approving. You never post anything yourself.\nFounder voice notes (write in this voice): ${voice || "plain, honest, first person, no marketing language"}\nChannel: ${lead.channel}. Channel rules: ${channelRules}\nRules for the draft: reference their specific post in their own words; say plainly the founder built something for this exact problem; ask for help trying it for one real task — a request for help, not a pitch; no link dump; under 90 words unless the channel rule above is stricter.\nProduct: ${p.productName} — ${p.productDesc}\nPain it addresses: ${p.pain}\nTheir post (by ${lead.author}): Title: ${lead.title}\n${lead.body.slice(0, 900)}`,
-        z.object({ draft: z.string(), toneCheck: z.string().default("") }));
+      const r = await drafterAgent.execute(ctx, { profile: p, lead });
       if (!r.ok) return { draft: lead.draftBody, toneCheck: r.status === "not_configured" ? LLM_SETUP_MESSAGE : `${r.message} No fallback draft was substituted — draft generation is a Muse step. Fix the Muse connection and try again.`, llmStatus: r.status };
-      if (!r.value.draft.trim()) return { draft: lead.draftBody, toneCheck: "Your large Muse model didn't return a usable draft, so nothing was saved. Try again — no template draft is substituted.", llmStatus: "error" };
       const draft = r.value.draft.trim();
       const toneCheck = r.value.toneCheck.trim() ? r.value.toneCheck.trim() : "Draft written by your large Muse model. Read it before approving — you are the tone check of last resort.";
       await db.update(schema.leads).set({ draftBody: draft, draftToneCheck: toneCheck, status: lead.status === "new" ? "drafted" : lead.status, updatedAt: new Date() }).where(eq(schema.leads.id, lead.id));
@@ -2718,12 +3047,12 @@ export const Actions = {
   }),
 
   // ─── LLM settings (founder's Muse API key + Muse model names) ───────────
-  // AI setup is key-only: the founder pastes their Muse API key (and
-  // optionally voice notes). Model choice is automatic — small/fast tier for
-  // high-volume first passes, large tier for drafts and summaries — so there
-  // is nothing to pick and nothing to misconfigure.
+  // AI setup is key-only: the founder pastes their Muse API key. Model
+  // choice is automatic — small/fast tier for high-volume first passes,
+  // large tier for drafts and summaries — so there is nothing to pick and
+  // nothing to misconfigure.
   saveLlmSettings: defineAction({
-    request: z.object({ apiKey: z.string().default(""), founderVoice: z.string().default("") }),
+    request: z.object({ apiKey: z.string().default("") }),
     response: z.object({ ok: z.boolean(), keyStored: z.boolean(), message: z.string() }),
     async handler(ctx, args) {
       const db = ctx.db<typeof schema>();
@@ -2732,14 +3061,28 @@ export const Actions = {
       // An empty field with no stored key stores nothing — succeeding here
       // used to flash "saved" while the stub stayed in charge.
       if (!typed && !existing) return { ok: false, keyStored: false, message: "No key entered — paste your Muse API key first, then save." };
+      if (typed && isPlaceholderKey(typed)) return { ok: false, keyStored: false, message: "That value is the local test placeholder, not a Muse API key — paste a real key from the Muse portal." };
       const key = typed || existing!.apiKey;
+      const keyChanged = !!typed && (!existing || existing.apiKey !== key);
       // One row, always: replace the whole table so a duplicate can never
-      // shadow the key on a first-row read.
+      // shadow the key on a first-row read. The Brave key rides along —
+      // saving the Muse key must never wipe it.
+      const braveKey = existing?.braveKey ?? "";
       await db.delete(schema.llmSettings);
-      await db.insert(schema.llmSettings).values({ provider: "muse", apiKey: key, baseUrl: "", smallModel: "auto", largeModel: "auto", founderVoice: args.founderVoice, updatedAt: Date.now() });
+      await db.insert(schema.llmSettings).values({ provider: "muse", apiKey: key, baseUrl: "", smallModel: "auto", largeModel: "auto", braveKey, updatedAt: Date.now() });
+      // A new key invalidates yesterday's test output: stub-tagged phrases,
+      // verdicts and plans are definitionally stale, so they clear now and
+      // live Muse refills the gaps (auto-expansion refires by itself).
+      let cleared = "";
+      if (keyChanged) {
+        try {
+          const purge = await Actions.purgeStubData.handler(ctx, {});
+          if (purge.profilesCleared || purge.leadsCleared || purge.expansionsCleared) cleared = ` ${purge.message}`;
+        } catch { /* purge is best-effort beside a key save */ }
+      }
       ctx.invalidateQueries();
       return typed
-        ? { ok: true, keyStored: true, message: `New Muse API key saved (••••${key.slice(-4)}). The status pill flips to Live when the key calls Muse Spark 1.3 directly — hit Test connection to confirm.` }
+        ? { ok: true, keyStored: true, message: `New Muse API key saved (••••${key.slice(-4)}). Hit Test connection to confirm it reaches Muse Spark 1.3 — then plans and phrases regenerate live.${cleared}` }
         : { ok: true, keyStored: false, message: `Settings saved — kept the saved key (••••${key.slice(-4)}).` };
     },
   }),
@@ -2752,6 +3095,47 @@ export const Actions = {
       await db.delete(schema.llmSettings);
       ctx.invalidateQueries();
       return { ok: true };
+    },
+  }),
+
+  // Optional Brave Search API key for web discovery (free tier at
+  // brave.com/search/api — one query per profile, cached like DDG). Stored
+  // beside the Muse key, empty clears it. Without it, discovery uses free
+  // DuckDuckGo scraping, which throttles on flagged networks.
+  saveBraveKey: defineAction({
+    request: z.object({ braveKey: z.string().default("") }),
+    response: z.object({ ok: z.boolean(), hasKey: z.boolean(), message: z.string() }),
+    async handler(ctx, args) {
+      const db = ctx.db<typeof schema>();
+      const rows = await db.select().from(schema.llmSettings).orderBy(desc(schema.llmSettings.id)).limit(1);
+      const key = args.braveKey.trim();
+      if (!rows[0]) {
+        await db.insert(schema.llmSettings).values({ provider: "muse", apiKey: "", baseUrl: "", smallModel: "auto", largeModel: "auto", braveKey: key, updatedAt: Date.now() });
+      } else {
+        await db.update(schema.llmSettings).set({ braveKey: key, updatedAt: Date.now() }).where(eq(schema.llmSettings.id, rows[0].id));
+      }
+      clearDiscoveryCache(-1); // backend may have changed — never serve the other backend's cache
+      ctx.invalidateQueries();
+      return key
+        ? { ok: true, hasKey: true, message: `Brave Search key saved (••••${key.slice(-4)}). Discovery uses it first, DuckDuckGo stays the fallback.` }
+        : { ok: true, hasKey: false, message: "Brave Search key removed — discovery falls back to free DuckDuckGo." };
+    },
+  }),
+
+  testBraveKey: defineAction({
+    request: z.object({ braveKey: z.string().default("") }),
+    response: z.object({ ok: z.boolean(), status: z.string(), message: z.string() }),
+    async handler(ctx, args) {
+      const typed = args.braveKey.trim();
+      const candidate = typed || await braveKeyFor(ctx);
+      if (!candidate) return { ok: false, status: "not_configured", message: "No Brave key to test — paste one first, then test." };
+      // One minimal query: proves the key works and the network reaches
+      // Brave. Burns a single query of the key's quota — said plainly.
+      const hits = await braveWebSearch("example test query", candidate);
+      // A live key returns results; a dead key, dead network, or block
+      // returns none — either way the verdict is honest, never stubbed.
+      if (hits.length) return { ok: true, status: "ok", message: `Brave Search answered with ${hits.length} result${hits.length === 1 ? "" : "s"} for the probe query (1 quota query used) — save it to use Brave for discovery.` };
+      return { ok: false, status: "error", message: "Brave Search returned nothing for the probe query — wrong key, spent quota, or this network blocks api.search.brave.com. DuckDuckGo fallback stays in place." };
     },
   }),
 
@@ -2794,7 +3178,7 @@ export const Actions = {
         if (typed || isDirectKey(candidate)) return { ok: false, status: "error", message: `Direct ${META_MODEL} call failed (${r.error}). Check the key and Model API quota — nothing was saved.` };
         rememberRoute(candidate, "runtime");
       }
-      const r = await runLlm(ctx, "small", "Connection test: reply with a short confirmation that you received this.", z.string());
+      const r = await runLlm(ctx, "small", "Connection test: reply with a short confirmation that you received this.", z.string(), { allowStubTag: true });
       if (!r.ok) return { ok: false, status: r.status, message: r.message };
       // The offline stub answers this exact prompt with a tagged canned
       // string. Calling that a passed test is a lie that strands founders on
@@ -2813,10 +3197,16 @@ export const Actions = {
   // founder-written content are never touched.
   purgeStubData: defineAction({
     request: z.object({}),
-    response: z.object({ ok: z.boolean(), message: z.string(), profilesCleared: z.number(), leadsCleared: z.number() }),
+    response: z.object({ ok: z.boolean(), message: z.string(), profilesCleared: z.number(), leadsCleared: z.number(), expansionsCleared: z.number() }),
     async handler(ctx) {
       const db = ctx.db<typeof schema>();
       const MARK = "%[local-stub]%";
+      // Stub-tagged expansion plans must go too — a leftover stub plan
+      // blocks the auto-plan from refiring and keeps stub queries alive.
+      const expRows = await db.select({ id: schema.searchExpansions.id }).from(schema.searchExpansions).where(like(schema.searchExpansions.plan, MARK));
+      for (const e of expRows) {
+        await db.delete(schema.searchExpansions).where(eq(schema.searchExpansions.id, e.id));
+      }
       const profRows = await db.select().from(schema.profiles)
         .where(or(like(schema.profiles.painPhrases, MARK), like(schema.profiles.workaroundPhrases, MARK), like(schema.profiles.exclusions, MARK), like(schema.profiles.keywords, MARK)));
       const cleanPhrases = (s: string) => {
@@ -2835,10 +3225,10 @@ export const Actions = {
         or(like(schema.leads.llmReason, MARK), like(schema.leads.llmQuote, MARK), like(schema.leads.draftBody, MARK)),
       ));
       for (const l of leadRows) {
-        await db.update(schema.leads).set({ llmCategory: "", llmConfidence: 0, llmReason: "", llmQuote: "", llmSignals: "", llmHash: "", llmReviewed: 0, draftBody: "" }).where(eq(schema.leads.id, l.id));
+        await db.update(schema.leads).set({ llmCategory: "", llmConfidence: 0, llmReason: "", llmQuote: "", llmSignals: "", llmHash: "", llmReviewed: 0, draftBody: "", semanticScore: -1 }).where(eq(schema.leads.id, l.id));
       }
       ctx.invalidateQueries();
-      return { ok: true, message: `Cleared stub test data from ${profRows.length} profile${profRows.length === 1 ? "" : "s"} and ${leadRows.length} lead${leadRows.length === 1 ? "" : "s"} — live Muse fills the gaps from here.`, profilesCleared: profRows.length, leadsCleared: leadRows.length };
+      return { ok: true, message: `Cleared stub test data from ${profRows.length} profile${profRows.length === 1 ? "" : "s"}, ${leadRows.length} lead${leadRows.length === 1 ? "" : "s"} and ${expRows.length} expansion plan${expRows.length === 1 ? "" : "s"} — live Muse fills the gaps from here.`, profilesCleared: profRows.length, leadsCleared: leadRows.length, expansionsCleared: expRows.length };
     },
   }),
 
@@ -2996,11 +3386,8 @@ export const Actions = {
       // lever/rationale above are deterministic signal arithmetic (which
       // lever is eligible, in the fixed order); the experiment itself must
       // be written by the founder's Muse model.
-      const r = await runLlm(ctx, "small",
-        `Suggest ONE next experiment for a founder from cohort signals. Hard rules: you must NOT give a PMF score, a PMF verdict, or say whether they have product-market fit — the founder decides that. You must keep the lever you are given (audience, message, or problem) — the order is fixed. Write the experiment as one concrete paragraph: what to change, who it runs on, for how long, and which signal to watch. Ground it in the numbers given.\nLever (fixed): ${lever}\nWhy this lever: ${rationale}\nSignals: ${JSON.stringify(signals)}\nProfile: audience ${p.audience}; pain ${p.pain}; core action ${p.coreAction}\nLatest feedback summary (may be empty): ${latestFb.slice(0, 1500)}`,
-        z.object({ experiment: z.string().default("") }));
+      const r = await watcherAgent.execute(ctx, { profile: p, lever, rationale, signals, latestFb });
       if (!r.ok) return { status: r.status, message: r.status === "not_configured" ? LLM_SETUP_MESSAGE : `${r.message} No rule-based suggestion was substituted — next-experiment suggestions are a Muse step.`, source: "" };
-      if (!r.value.experiment.trim()) return { status: "error", message: "Your Muse model didn't return a usable experiment, so nothing was saved. Try again.", source: "" };
       const experiment = r.value.experiment.trim();
       const source = "your small Muse model, on the fixed audience → message → problem order";
       const content = JSON.stringify({ lever, rationale, experiment, signals, source, disclaimer: "This is a suggested next test, not a PMF score or verdict. Whether this counts as PMF is the founder's call." });

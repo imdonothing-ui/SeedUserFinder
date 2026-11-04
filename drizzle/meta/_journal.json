@@ -43,6 +43,20 @@
       "when": 1793546410821,
       "tag": "0006_followups",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1794000000000,
+      "tag": "0007_brave_key",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1794100000000,
+      "tag": "0008_semantic_score",
+      "breakpoints": true
     }
   ]
 }

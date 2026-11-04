@@ -20,25 +20,26 @@
   --text-4xl--line-height: 40px;
   --text-5xl: 48px;
   --text-5xl--line-height: 52px;
-  --font-serif: Georgia, "Iowan Old Style", Palatino, "Times New Roman", serif;
+  --font-display: "Avenir Next", "Century Gothic", Futura, system-ui, -apple-system, "Segoe UI", sans-serif;
 }
 
 :root {
   color-scheme: light dark;
-  --bg: #f5f6f8;
-  --surface: #ffffff;
-  --surface-alt: #eef0f4;
-  --text: #141a24;
-  --dim: #5a6577;
-  --border: #dbe0e8;
-  --accent: #2b5ce6;
-  --accent-text: #ffffff;
-  --accent-bg: #e4ebfd;
-  --amber: #b45309;
-  --amber-bg: #fdf3e0;
-  --green-bg: #e6f2ec;
+  --bg: #faf4ec;
+  --surface: #fffdf8;
+  --surface-alt: #f2e9db;
+  --text: #1b140e;
+  --dim: #77685a;
+  --border: #e6d7c3;
+  --accent: #d2481b;
+  --accent-text: #fff8f1;
+  --accent-bg: #fadfc9;
+  --amber: #96650a;
+  --amber-bg: #faedcb;
+  --green-bg: #e1efe0;
   --red: #b3261e;
-  --radius: 10px;
+  --radius: 18px;
+  --radius-sm: 12px;
   --space-surface: var(--surface);
   --space-surface-alt: var(--surface-alt);
   --space-muted: var(--dim);
@@ -48,16 +49,16 @@
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #0f1420;
-    --surface: #182032;
-    --surface-alt: #1f2940;
-    --text: #e8edf7;
-    --dim: #9aa7c2;
-    --border: #2c3a58;
-    --accent: #7aa5f8;
-    --accent-text: #0a1230;
-    --accent-bg: #22305a;
-    --amber: #e8a34c;
+    --bg: #16110d;
+    --surface: #201a15;
+    --surface-alt: #2b231b;
+    --text: #f3eae0;
+    --dim: #b3a48f;
+    --border: #3a2f24;
+    --accent: #f0733c;
+    --accent-text: #250f06;
+    --accent-bg: #3a2415;
+    --amber: #e0a83f;
     --amber-bg: #33270f;
     --green-bg: #143327;
     --red: #f08a80;

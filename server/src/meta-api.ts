@@ -60,8 +60,17 @@ export function extractResponseText(payload: unknown): string {
   return texts.join("\n").trim();
 }
 export function extractJsonValue(payload: unknown): unknown {
-  const joined = extractResponseText(payload);
-  const matches = joined.match(/\{[\s\S]*\}/g) ?? [];
+  // Fences are decoration, not JSON — strip them before scanning.
+  const joined = extractResponseText(payload).replace(/```(?:json)?/gi, "");
+  // Greedy spans first (whole array / whole object, fences already gone),
+  // then non-greedy spans (an object nested inside prose or inside an array
+  // the greedy span could not parse). Every candidate must JSON.parse; the
+  // largest parseable value wins, so a bare verdict array `[{...}]` beats
+  // any single object inside it and prose never parses at all.
+  const matches = [
+    ...(joined.match(/\[[\s\S]*\]|\{[\s\S]*\}/g) ?? []),
+    ...(joined.match(/\[[\s\S]*?\]|\{[\s\S]*?\}/g) ?? []),
+  ];
   let best: unknown = null;
   for (const m of matches) {
     try {

@@ -34,6 +34,7 @@ export const leads = sqliteTable("leads", {
   postedAt: text("posted_at").notNull().default(""),
   matchScore: integer("match_score").notNull().default(50),
   matchReason: text("match_reason").notNull().default(""),
+  semanticScore: integer("semantic_score").notNull().default(-1), // 0-100 listwise LLM rerank vs the pain; -1 = never scored
   draftBody: text("draft_body").notNull().default(""),
   // LLM classification evidence (empty category = not classified by LLM)
   llmCategory: text("llm_category").notNull().default(""), // seed_user | curious | irrelevant
@@ -117,7 +118,7 @@ export const llmSettings = sqliteTable("llm_settings", {
   baseUrl: text("base_url").notNull().default(""), // legacy column, unused under Muse
   smallModel: text("small_model").notNull().default(""),
   largeModel: text("large_model").notNull().default(""),
-  founderVoice: text("founder_voice").notNull().default(""),
+  braveKey: text("brave_key").notNull().default(""), // optional Brave Search API key for web discovery (free tier); empty falls back to DuckDuckGo
   updatedAt: integer("updated_at").notNull().default(0),
 });
 

@@ -52,7 +52,6 @@ export async function boot() {
       baseUrl: "",
       smallModel: "local-stub-small",
       largeModel: "local-stub-large",
-      founderVoice: "",
       updatedAt: Date.now(),
     });
   }
